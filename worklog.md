@@ -106,3 +106,31 @@ Work Log:
 
 Stage Summary:
 - PakistanCraft now has: ambient occlusion, gradient sky with sun/moon/stars, block-break particles, dynamic rain weather, full settings panel (render distance/FOV/brightness/sensitivity/AO/clouds/stars/weather/mode), survival mode (hunger/fall damage/regen), save/load to localStorage, compass, and expanded controls (G/R/T/N/F/E/Esc). All verified working in-browser with no errors. Lint clean.
+
+---
+Task ID: 5
+Agent: main (Z.ai Code)
+Task: Make PakistanCraft "100x better than Minecraft" — focus on Lahore landmarks, fix controls, high production.
+
+Work Log:
+- **Lahore landmarks** (`landmarks.ts`, new): 7 original procedural structures:
+  - **Badshahi Mosque**: 30×30 red sandstone courtyard, 4 tall corner minarets with white dome tops + gold finials, prayer hall with 3 white marble domes, arched entrance, green carpet interior.
+  - **Minar-e-Pakistan**: marble platform with blue tile border, 5-layer tapering tower (marble→concrete→marble), observation deck, gold crescent on top.
+  - **Shalimar Gardens**: 3 terraced levels with marble floors, central water channels, fountains, hedges, cypress trees, red sandstone retaining walls.
+  - **Walled City Gate**: 24-block brick wall with crenellations, central arched gateway, 2 turrets with green domes, street lamp.
+  - **Food Street**: narrow asphalt street, brick buildings with doors/windows/colored awnings (red/green/yellow), hanging lanterns, string lights across the street.
+  - **Orange Line Metro**: elevated concrete track on pillars with metal rails, running 100 blocks east-west.
+  - **Lahore House**: DHA/Model Town style flat-roofed concrete/brick house with parapet, door, windows, iron gate.
+- **Lahore city generation**: Full city placed at spawn (center 40,40) — player now spawns IN Lahore. Badshahi Mosque at center, Minar-e-Pakistan to the east, Shalimar Gardens to the north, Walled City gate to the south, Food Street to the west, Orange Line metro running across, 14 residential houses scattered. Each 6×6 chunk region elsewhere gets one random Lahore landmark.
+- **10 new block types**: RED_SANDSTONE (Badshahi), WHITE_DOME (mosque domes), TILE_BLUE (Kashmiri tiles), AWNING_RED/GREEN/YELLOW (food street), METAL_RAIL (metro), HEDGE (gardens), FOUNTAIN, LANTERN (light source). Each with custom procedural texture.
+- **Intuitive touch controls** (`TouchControls.tsx`, new): Virtual joystick (bottom-left) for movement, look pad (right side) for camera drag, on-screen buttons for JUMP/FLY/SPRINT/BREAK/PLACE. Auto-detects touch devices via `useIsTouchDevice` hook.
+- **Block selection box**: 3D wireframe box around the targeted block (like Minecraft's selection outline). Color shifts from black→red as break progress increases, showing damage accumulation.
+- **Animated water**: Custom ShaderMaterial with vertex wave displacement (sine waves on top faces), scrolling UVs for flowing effect, manual fog blending. Fixed `fog: true` crash by setting `fog: false` (Three.js expects standard fog uniform names for ShaderMaterial).
+- **Minimap** (`Minimap.tsx`, new): 100×100px canvas in bottom-right corner showing biome colors, player position arrow (rotates with yaw), and N marker.
+- **Spawn at Lahore**: Player now spawns at (40, 50, 40) — the Lahore city center — facing the Badshahi Mosque. 5×5 chunk area pre-generated for smooth start.
+- Bug fixes: water ShaderMaterial `color` attribute declaration, `fog: false` to prevent refreshFogUniforms crash, particle attribute rename.
+- Verified with agent-browser + VLM: game loads with no errors, Lahore landmarks visible (red sandstone courtyard, minarets, prayer hall, gardens confirmed by VLM), minimap renders, water animates.
+- Pushed to GitHub (aliihsan3668/pakistancraft) and deployed to Vercel (pakistancraft.vercel.app).
+
+Stage Summary:
+- PakistanCraft now spawns the player in Lahore with Badshahi Mosque, Minar-e-Pakistan, Shalimar Gardens, Walled City gate, Food Street, Orange Line metro, and residential houses all within walking distance. Touch controls, animated water, block selection box, and minimap added. Live at pakistancraft.vercel.app.
