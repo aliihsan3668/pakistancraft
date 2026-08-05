@@ -37,6 +37,11 @@ export interface HudState {
 export interface EngineCallbacks {
   onHud?: (s: HudState) => void;
   onReady?: () => void;
+  onError?: (msg: string) => void;
+}
+
+export interface EngineOptions extends EngineCallbacks {
+  seed: number;
 }
 
 // Default hotbar: a curated Pakistani palette
@@ -122,6 +127,14 @@ export class Engine {
 
   pointerLocked = false;
   inputEnabled = true;
+  // drag-to-look fallback (used when pointer lock is unavailable, e.g. iframes)
+  private dragLook = false;
+  private dragLastX = 0;
+  private dragLastY = 0;
+  private clickStartX = 0;
+  private clickStartY = 0;
+  private clickStartT = 0;
+  private clickMoved = 0;
   private keys = new Set<string>();
   private mouseButtons = new Set<number>();
   private breakCooldown = 0;
@@ -145,16 +158,23 @@ export class Engine {
   private _onContext: (e: Event) => void;
   private _raf = 0;
 
-  constructor(canvas: HTMLCanvasElement, callbacks: EngineCallbacks = {}) {
+  constructor(canvas: HTMLCanvasElement, opts: EngineOptions) {
     this.canvas = canvas;
-    this.callbacks = callbacks;
+    this.callbacks = opts;
     this.hotbar = [...DEFAULT_HOTBAR];
 
-    this.renderer = new THREE.WebGLRenderer({
-      canvas,
-      antialias: false,
-      powerPreference: "high-performance",
-    });
+    try {
+      this.renderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: false,
+        powerPreference: "high-performance",
+      });
+    } catch (e) {
+      opts.onError?.(
+        "WebGL could not be initialized. Make sure hardware acceleration is enabled in your browser settings."
+      );
+      throw e;
+    }
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -194,16 +214,11 @@ export class Engine {
       }),
     };
 
-    this.world = new World(this.scene, this.materials, 1337);
+    this.world = new World(this.scene, this.materials, opts.seed);
 
-    // Spawn player at origin, find surface
-    // Pre-generate spawn area so spawnY works
-    for (let dx = -1; dx <= 1; dx++)
-      for (let dz = -1; dz <= 1; dz++) this.world.ensureTerrain(dx, dz);
-    for (let dx = -1; dx <= 1; dx++)
-      for (let dz = -1; dz <= 1; dz++) this.world.ensureDecorated(dx, dz);
-    const spawnY = Player.spawnY(this.world, 8, 8);
-    this.player = new Player(this.world, this.camera, 8.5, spawnY + 0.5, 8.5);
+    // Placeholder player; real spawn position is computed in initSpawn()
+    // (called by start()) so the loading screen can paint first.
+    this.player = new Player(this.world, this.camera, 8.5, 50, 8.5);
 
     // Lights
     this.ambient = new THREE.AmbientLight(0xffffff, 0.35);
@@ -231,6 +246,14 @@ export class Engine {
 
   start() {
     if (this.running) return;
+    try {
+      this.initSpawn();
+    } catch (e) {
+      this.callbacks.onError?.(
+        "Failed to generate world: " + (e as Error).message
+      );
+      throw e;
+    }
     this.running = true;
     window.addEventListener("keydown", this._onKeyDown);
     window.addEventListener("keyup", this._onKeyUp);
@@ -262,19 +285,31 @@ export class Engine {
     this.renderer.dispose();
   }
 
-  requestPointerLock() {
-    this.canvas.requestPointerLock();
-  }
-
-  setSeed(seed: number) {
-    // rebuild world with new seed (used before start)
-    this.world = new World(this.scene, this.materials, seed);
+  private initSpawn() {
+    // Generate the 3x3 chunk area around spawn so spawnY + collisions work.
     for (let dx = -1; dx <= 1; dx++)
       for (let dz = -1; dz <= 1; dz++) this.world.ensureTerrain(dx, dz);
     for (let dx = -1; dx <= 1; dx++)
       for (let dz = -1; dz <= 1; dz++) this.world.ensureDecorated(dx, dz);
     const spawnY = Player.spawnY(this.world, 8, 8);
-    this.player = new Player(this.world, this.camera, 8.5, spawnY + 0.5, 8.5);
+    this.player.pos.set(8.5, spawnY + 0.5, 8.5);
+    this.player.vel.set(0, 0, 0);
+  }
+
+  requestPointerLock() {
+    // Best-effort: in sandboxed iframes pointer lock may be blocked.
+    try {
+      const r = this.canvas.requestPointerLock() as unknown as
+        | Promise<void>
+        | undefined;
+      if (r && typeof r.then === "function") {
+        r.catch(() => {
+          /* pointer lock unavailable — drag-to-look fallback stays active */
+        });
+      }
+    } catch {
+      /* ignore */
+    }
   }
 
   teleportTo(x: number, z: number) {
@@ -325,8 +360,8 @@ export class Engine {
     if (code === "Escape") {
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     }
-    // prevent scroll on space
-    if (code === "Space") e.preventDefault();
+    // prevent page scroll on space / arrows
+    if (code === "Space" || code.startsWith("Arrow")) e.preventDefault();
   }
 
   private onKeyUp(e: KeyboardEvent) {
@@ -350,27 +385,66 @@ export class Engine {
 
   private onMouseDown(e: MouseEvent) {
     this.mouseButtons.add(e.button);
-    if (!this.pointerLocked) return;
-    if (e.button === 0) {
-      this.tryBreak();
-      this.breakCooldown = 0.25;
-    } else if (e.button === 2) {
-      this.tryPlace();
-      this.placeCooldown = 0.25;
+    if (!this.inputEnabled) return;
+    if (this.pointerLocked) {
+      // Pointer-lock mode: immediate break / place
+      if (e.button === 0) {
+        this.tryBreak();
+        this.breakCooldown = 0.25;
+      } else if (e.button === 2) {
+        this.tryPlace();
+        this.placeCooldown = 0.25;
+      }
+    } else {
+      // Drag-to-look mode (iframe / no pointer lock)
+      if (e.button === 0) {
+        this.dragLook = true;
+        this.dragLastX = e.clientX;
+        this.dragLastY = e.clientY;
+        this.clickStartX = e.clientX;
+        this.clickStartY = e.clientY;
+        this.clickStartT = performance.now();
+        this.clickMoved = 0;
+      } else if (e.button === 2) {
+        this.tryPlace();
+        this.placeCooldown = 0.25;
+      }
     }
   }
 
   private onMouseUp(e: MouseEvent) {
     this.mouseButtons.delete(e.button);
+    if (!this.inputEnabled) {
+      this.dragLook = false;
+      return;
+    }
+    if (!this.pointerLocked && e.button === 0 && this.dragLook) {
+      const dt = performance.now() - this.clickStartT;
+      // A quick click without much movement → break the targeted block
+      if (this.clickMoved < 6 && dt < 300) {
+        this.tryBreak();
+        this.breakCooldown = 0.25;
+      }
+      this.dragLook = false;
+    }
   }
 
   private onMouseMove(e: MouseEvent) {
-    if (!this.pointerLocked) return;
-    this.player.setLookFromDelta(e.movementX, e.movementY);
+    if (!this.inputEnabled) return;
+    if (this.pointerLocked) {
+      this.player.setLookFromDelta(e.movementX, e.movementY);
+    } else if (this.dragLook && this.mouseButtons.has(0)) {
+      const dx = e.clientX - this.dragLastX;
+      const dy = e.clientY - this.dragLastY;
+      this.dragLastX = e.clientX;
+      this.dragLastY = e.clientY;
+      this.clickMoved += Math.abs(dx) + Math.abs(dy);
+      this.player.setLookFromDelta(dx, dy, 0.005);
+    }
   }
 
   private onWheel(e: WheelEvent) {
-    if (!this.pointerLocked) return;
+    if (!this.inputEnabled) return;
     e.preventDefault();
     const dir = e.deltaY > 0 ? 1 : -1;
     this.setSelected(this.selected + dir);
@@ -544,11 +618,21 @@ export class Engine {
     // input
     this.updateInputState();
 
+    // arrow-key look (fallback when mouse look is restricted)
+    if (this.inputEnabled) {
+      const lr = 1.4 * dt;
+      if (this.keys.has("ArrowLeft")) this.player.setLookFromDelta(-lr, 0, 1);
+      if (this.keys.has("ArrowRight")) this.player.setLookFromDelta(lr, 0, 1);
+      if (this.keys.has("ArrowUp")) this.player.setLookFromDelta(0, -lr, 1);
+      if (this.keys.has("ArrowDown")) this.player.setLookFromDelta(0, lr, 1);
+    }
+
     // continuous break/place while holding (creative style)
-    if (this.pointerLocked) {
+    if (this.inputEnabled) {
       this.breakCooldown -= dt;
       this.placeCooldown -= dt;
-      if (this.mouseButtons.has(0) && this.breakCooldown <= 0) {
+      // continuous break only in pointer-lock mode (drag mode breaks on click)
+      if (this.pointerLocked && this.mouseButtons.has(0) && this.breakCooldown <= 0) {
         this.tryBreak();
         this.breakCooldown = 0.22;
       }

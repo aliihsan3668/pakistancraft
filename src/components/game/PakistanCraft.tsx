@@ -26,9 +26,14 @@ export default function PakistanCraft() {
   const [hud, setHud] = useState<HudState | null>(null);
   const [seed, setSeed] = useState("");
   const [showInventory, setShowInventory] = useState(false);
+  const [paused, setPaused] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const startGame = useCallback((seedStr: string) => {
     setSeed(seedStr);
+    setHud(null);
+    setError(null);
+    setPaused(false);
     setPhase("playing");
   }, []);
 
@@ -36,22 +41,44 @@ export default function PakistanCraft() {
   useEffect(() => {
     if (phase !== "playing" || !canvasRef.current) return;
     const seedNum = seed ? hashSeed(seed) : Math.floor(Math.random() * 1e9);
-    const eng = new Engine(canvasRef.current, {
-      onHud: (s) => {
-        setHud(s);
-      },
-    });
-    eng.setSeed(seedNum);
+    let eng: Engine | null = null;
+    try {
+      eng = new Engine(canvasRef.current, {
+        seed: seedNum,
+        onHud: (s) => setHud(s),
+        onError: (m) => setError(m),
+      });
+    } catch (e) {
+      const msg =
+        "Failed to start the game engine. " +
+        (e instanceof Error ? e.message : String(e));
+      // defer so we don't setState synchronously inside the effect body
+      queueMicrotask(() => setError(msg));
+      return;
+    }
     engineRef.current = eng;
-    eng.start();
-    // request pointer lock on first user gesture — handled by canvas click
+    // Defer heavy world generation so the "Generating…" loading screen
+    // actually paints before the main thread blocks.
+    const raf2 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        try {
+          eng?.start();
+        } catch (e) {
+          setError(
+            "Failed to generate world. " +
+              (e instanceof Error ? e.message : String(e))
+          );
+        }
+      });
+    });
     return () => {
-      eng.dispose();
+      cancelAnimationFrame(raf2);
+      eng?.dispose();
       engineRef.current = null;
     };
   }, [phase, seed]);
 
-  // 'E' toggles inventory, 'Escape' closes inventory
+  // 'E' toggles inventory, 'Escape' pauses / closes inventory
   useEffect(() => {
     if (phase !== "playing") return;
     const handler = (e: KeyboardEvent) => {
@@ -62,16 +89,25 @@ export default function PakistanCraft() {
           const eng = engineRef.current;
           if (eng) {
             eng.inputEnabled = !next;
-            if (next) {
-              if (document.pointerLockElement) document.exitPointerLock();
-            }
+            if (next && document.pointerLockElement) document.exitPointerLock();
           }
+          if (next) setPaused(false);
           return next;
         });
-      } else if (e.code === "Escape" && showInventory) {
-        setShowInventory(false);
-        const eng = engineRef.current;
-        if (eng) eng.inputEnabled = true;
+      } else if (e.code === "Escape") {
+        if (showInventory) {
+          setShowInventory(false);
+          const eng = engineRef.current;
+          if (eng) eng.inputEnabled = true;
+        } else {
+          setPaused((p) => {
+            const next = !p;
+            const eng = engineRef.current;
+            if (eng) eng.inputEnabled = !next;
+            if (next && document.pointerLockElement) document.exitPointerLock();
+            return next;
+          });
+        }
       }
     };
     window.addEventListener("keydown", handler);
@@ -87,10 +123,21 @@ export default function PakistanCraft() {
     }
   }, []);
 
+  const resume = useCallback(() => {
+    setPaused(false);
+    const eng = engineRef.current;
+    if (eng) {
+      eng.inputEnabled = true;
+      eng.requestPointerLock();
+    }
+  }, []);
+
   const onCanvasClick = useCallback(() => {
-    if (showInventory) return;
+    if (showInventory || paused) return;
+    // best-effort pointer lock; the game is fully playable via
+    // drag-to-look if the iframe blocks pointer lock.
     engineRef.current?.requestPointerLock();
-  }, [showInventory]);
+  }, [showInventory, paused]);
 
   const pickBlock = useCallback(
     (blockId: number) => {
@@ -101,8 +148,9 @@ export default function PakistanCraft() {
     [hud]
   );
 
-  const isPaused =
-    phase === "playing" && hud && !hud.pointerLocked && !showInventory;
+  if (error) {
+    return <ErrorScreen message={error} onBack={() => setPhase("start")} />;
+  }
 
   return (
     <div className="fixed inset-0 overflow-hidden bg-black select-none">
@@ -111,7 +159,7 @@ export default function PakistanCraft() {
         <canvas
           ref={canvasRef}
           onClick={onCanvasClick}
-          className="absolute inset-0 block h-full w-full"
+          className="absolute inset-0 block h-full w-full touch-none"
         />
       )}
 
@@ -122,7 +170,7 @@ export default function PakistanCraft() {
       {phase === "playing" && hud && (
         <>
           <Hud hud={hud} />
-          {isPaused && <PauseOverlay onResume={() => engineRef.current?.requestPointerLock()} />}
+          {paused && <PauseOverlay onResume={resume} />}
           {showInventory && (
             <Inventory
               selectedSlot={hud.selectedSlot}
@@ -133,6 +181,33 @@ export default function PakistanCraft() {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ---------- Error Screen ----------
+function ErrorScreen({
+  message,
+  onBack,
+}: {
+  message: string;
+  onBack: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 flex items-center justify-center bg-[#1a0a0a] p-6">
+      <div className="max-w-md rounded-xl border border-red-500/30 bg-black/50 p-6 text-center">
+        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-500/20 text-2xl">
+          ⚠
+        </div>
+        <h2 className="text-xl font-bold text-red-300">Couldn&apos;t start game</h2>
+        <p className="mt-2 text-sm text-white/70">{message}</p>
+        <Button
+          onClick={onBack}
+          className="mt-5 bg-[#e8c14a] font-bold text-[#01411C] hover:bg-[#f0d060]"
+        >
+          ← Back to menu
+        </Button>
+      </div>
     </div>
   );
 }
@@ -221,17 +296,24 @@ function StartScreen({ onPlay }: { onPlay: (seed: string) => void }) {
 
         <div className="mt-6 grid max-w-2xl grid-cols-2 gap-x-8 gap-y-1 text-left text-xs text-white/60 sm:grid-cols-3">
           <Control k="WASD" v="Move" />
-          <Control k="Mouse" v="Look" />
+          <Control k="Drag / Mouse" v="Look around" />
+          <Control k="Arrows" v="Look (alt)" />
           <Control k="Space" v="Jump / Swim" />
           <Control k="Shift" v="Sprint" />
           <Control k="Ctrl" v="Descend (fly)" />
           <Control k="F" v="Toggle fly" />
-          <Control k="L-Click" v="Break block" />
+          <Control k="Click" v="Break block" />
           <Control k="R-Click" v="Place block" />
           <Control k="1–9 / Wheel" v="Select hotbar" />
           <Control k="E" v="Inventory" />
           <Control k="Esc" v="Pause" />
         </div>
+
+        <p className="mt-4 max-w-lg rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[11px] leading-relaxed text-amber-200/80">
+          Tip: if your mouse can&apos;t lock (common in preview iframes), just
+          drag to look, click to break, right-click to place. Use arrow keys to
+          look around too.
+        </p>
 
         <p className="mt-8 max-w-lg text-[11px] leading-relaxed text-white/40">
           A browser-based voxel sandbox built with Three.js. Procedural infinite
@@ -257,8 +339,14 @@ function Control({ k, v }: { k: string; v: string }) {
 function LoadingScreen() {
   return (
     <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#01411C] text-white">
-      <div className="mb-4 h-10 w-10 animate-spin rounded-full border-4 border-white/20 border-t-[#e8c14a]" />
-      <p className="font-mono text-sm text-white/70">Generating Pakistan…</p>
+      <div className="mb-5 h-12 w-12 animate-spin rounded-full border-4 border-white/20 border-t-[#e8c14a]" />
+      <p className="font-mono text-base text-white/80">Generating Pakistan…</p>
+      <p className="mt-2 font-mono text-[11px] text-white/40">
+        carving biomes, rivers, villages &amp; mosques
+      </p>
+      <p className="mt-6 max-w-xs text-center text-[11px] leading-relaxed text-white/30">
+        First load builds the world seed — this only happens once per world.
+      </p>
     </div>
   );
 }
@@ -270,26 +358,28 @@ function PauseOverlay({ onResume }: { onResume: () => void }) {
       className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={onResume}
     >
-      <div className="rounded-2xl border border-white/15 bg-[#01411C]/80 p-8 text-center">
+      <div
+        className="rounded-2xl border border-white/15 bg-[#01411C]/90 p-8 text-center"
+        onClick={(e) => e.stopPropagation()}
+      >
         <h2 className="text-3xl font-black text-white">Paused</h2>
         <p className="mt-2 text-sm text-white/70">
-          Click anywhere to resume playing
+          Press Resume to keep playing
         </p>
         <Button
-          onClick={(e) => {
-            e.stopPropagation();
-            onResume();
-          }}
+          onClick={onResume}
           className="mt-5 bg-[#e8c14a] font-bold text-[#01411C] hover:bg-[#f0d060]"
         >
           Resume
         </Button>
         <div className="mt-6 grid grid-cols-2 gap-x-6 gap-y-1 text-left text-[11px] text-white/60">
           <Control k="WASD" v="Move" />
+          <Control k="Drag" v="Look around" />
+          <Control k="Arrows" v="Look (alt)" />
           <Control k="Space" v="Jump" />
           <Control k="Shift" v="Sprint" />
           <Control k="F" v="Fly" />
-          <Control k="L-Click" v="Break" />
+          <Control k="Click" v="Break" />
           <Control k="R-Click" v="Place" />
           <Control k="E" v="Inventory" />
           <Control k="1–9" v="Hotbar" />
@@ -353,6 +443,13 @@ function Hud({ hud }: { hud: HudState }) {
         <span className="ml-2 rounded border border-white/20 bg-white/10 px-1.5 py-0.5">Esc</span>{" "}
         Pause
       </div>
+
+      {/* Drag-mode hint (shown when pointer lock isn't active) */}
+      {!hud.pointerLocked && (
+        <div className="absolute left-1/2 top-14 -translate-x-1/2 rounded-full border border-amber-400/30 bg-black/60 px-4 py-1.5 text-center font-mono text-[11px] text-amber-200/90 backdrop-blur">
+          drag to look · click to break · right-click to place · arrows to look
+        </div>
+      )}
 
       {/* Bottom: health, hunger, hotbar */}
       <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5">

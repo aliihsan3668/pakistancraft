@@ -49,3 +49,38 @@ Work Log:
 Stage Summary:
 - PakistanCraft is fully playable and verified: start screen → procedural Pakistani world (13 biomes) → block break/place → creative inventory → day/night → HUD. No runtime errors. Lint clean.
 - Final files: src/lib/game/{constants,blocks,biomes,noise,worldgen,chunk,world,player,engine,icons}.ts and src/components/game/{PakistanCraft,icons}.tsx, src/app/page.tsx.
+
+---
+Task ID: 3
+Agent: main (Z.ai Code)
+Task: Fix "not loading" issue reported by user viewing via Preview Panel.
+
+Work Log:
+- Diagnosed root cause: the Preview Panel is an iframe, and pointer lock is blocked in sandboxed iframes without `allow="pointer-lock"`. The old code derived `isPaused = !hud.pointerLocked`, so the Pause overlay showed permanently and blocked all interaction — the game rendered but looked frozen/broken.
+- Also identified: heavy synchronous world generation in the Engine constructor blocked the main thread, so the "Generating Pakistan…" loading screen never painted.
+- Engine (`src/lib/game/engine.ts`) changes:
+  - Added a **drag-to-look fallback**: when pointer lock is unavailable, left-drag rotates the camera, a quick left-click (no drag) breaks the targeted block, and right-click places. The game is now fully playable inside any iframe.
+  - Added **arrow-key look** (←→↑↓) as an alternate look control.
+  - Made `requestPointerLock()` resilient — wrapped in try/catch and handles the promise-rejection form so iframe failures are silent.
+  - Moved spawn chunk generation out of the constructor into `initSpawn()` (called by `start()`), and `start()` wraps it in try/catch → `onError`.
+  - Wrapped WebGLRenderer creation in try/catch → `onError` (shows a friendly message if WebGL is unavailable instead of a black screen).
+  - Removed the redundant `setSeed()` double-generation; the seed is now passed via `EngineOptions` to the constructor.
+  - Continuous break/place now keyed off `inputEnabled` (not `pointerLocked`); continuous break only in pointer-lock mode, drag mode breaks on click.
+  - Arrow keys + Space now `preventDefault` to stop page scrolling.
+- React (`src/components/game/PakistanCraft.tsx`) changes:
+  - Replaced the derived `isPaused` with an **explicit `paused` state** toggled only by Escape. The game no longer auto-pauses when pointer lock is off — it's immediately playable in drag mode.
+  - Deferred `eng.start()` with a **double `requestAnimationFrame`** so the LoadingScreen actually paints before the main thread blocks on world generation.
+  - Added an **error boundary / ErrorScreen** component shown if the engine throws (WebGL failure, generation error) instead of a blank screen.
+  - Added a **drag-mode hint banner** in the HUD ("drag to look · click to break · right-click to place · arrows to look") that appears whenever pointer lock isn't active.
+  - Improved the LoadingScreen with progress subtext.
+  - Updated the Pause overlay and start-screen controls list to document drag/arrow-key controls.
+- Verified with agent-browser + VLM:
+  - Click Play → game loads, HUD shows "Indus River Bank / دریائے سندھ کا کنارہ", coords, time, 20-60 fps.
+  - `hasPause: false` — no permanent pause overlay.
+  - `hasDragHint: true` — drag-mode banner visible.
+  - Simulated a drag (mousedown→move→mouseup) → game kept running, no pause, no errors.
+  - VLM confirmed: 3D voxel terrain visible, HUD with biome+coords+hotbar, drag hint banner present, no Paused overlay blocking the screen.
+- Lint passes clean.
+
+Stage Summary:
+- The game now loads and is fully playable inside the Preview Panel iframe via drag-to-look + click-to-break + right-click-to-place + arrow keys, with no permanent pause overlay and a proper loading/error path.
