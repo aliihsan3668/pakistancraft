@@ -223,6 +223,12 @@ export class Engine {
   rain: THREE.Points | null = null;
   rainVel: Float32Array | null = null;
   selectionBox: THREE.LineSegments | null = null;
+  // cached colors (avoid per-frame allocation)
+  private C_SUN_WARM = new THREE.Color("#fff2d8");
+  private C_SUN_SUNSET = new THREE.Color("#ff9a3a");
+  private _sunColor = new THREE.Color();
+  // cached raycast result (reused for selection box + break progress)
+  private _frameRaycast: { x: number; y: number; z: number; nx: number; ny: number; nz: number } | null = null;
 
   timeOfDay = 0.3; // start at morning
   running = false;
@@ -423,6 +429,28 @@ export class Engine {
     window.removeEventListener("resize", this._onResize);
     this.canvas.removeEventListener("contextmenu", this._onContext);
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+    // dispose all subsystems to prevent GPU memory leaks
+    this.world.dispose();
+    this.sky.dispose();
+    this.particles.dispose();
+    if (this.clouds) {
+      this.scene.remove(this.clouds);
+      this.clouds.geometry.dispose();
+      (this.clouds.material as THREE.Material).dispose();
+    }
+    if (this.rain) {
+      this.scene.remove(this.rain);
+      this.rain.geometry.dispose();
+      (this.rain.material as THREE.Material).dispose();
+    }
+    if (this.selectionBox) {
+      this.scene.remove(this.selectionBox);
+      this.selectionBox.geometry.dispose();
+      (this.selectionBox.material as THREE.Material).dispose();
+    }
+    this.materials.solid.dispose();
+    this.materials.cutout.dispose();
+    this.materials.water.dispose();
     this.renderer.dispose();
   }
 
@@ -431,13 +459,19 @@ export class Engine {
       for (let dz = -2; dz <= 2; dz++) this.world.ensureTerrain(dx, dz);
     for (let dx = -2; dx <= 2; dx++)
       for (let dz = -2; dz <= 2; dz++) this.world.ensureDecorated(dx, dz);
-    // Spawn the player at the Lahore city center (open courtyard area).
+    // Spawn the player at the Lahore city center, elevated for a panoramic view.
     const spawnX = 40;
     const spawnZ = 40;
-    const spawnY = Player.spawnY(this.world, spawnX, spawnZ);
-    this.player.pos.set(spawnX + 0.5, spawnY + 0.5, spawnZ + 0.5);
+    const groundY = Player.spawnY(this.world, spawnX, spawnZ);
+    this.player.pos.set(spawnX + 0.5, groundY + 8.5, spawnZ + 0.5);
     this.player.vel.set(0, 0, 0);
     this.player.yaw = 0.7; // face toward the mosque entrance
+    this.player.pitch = -0.15;
+    (this.player as unknown as { _targetYaw: number })._targetYaw = 0.7;
+    (this.player as unknown as { _targetPitch: number })._targetPitch = -0.15;
+    // start in creative fly so the player doesn't fall
+    this.player.gameMode = "creative";
+    this.player.flying = true;
   }
 
   requestPointerLock() {
@@ -525,6 +559,16 @@ export class Engine {
     return this.hotbar[this.selected];
   }
 
+  // Sample biome at world coords for minimap (returns BiomeId)
+  getBiomeAt(wx: number, wz: number): number {
+    return this.world.getBiomeAt(wx, wz);
+  }
+
+  // Sample terrain height at world coords for minimap
+  getHeightAt(wx: number, wz: number): number {
+    return this.world.gen.column(wx, wz).height;
+  }
+
   // React touch layer writes touch deltas/state here.
   setTouchInput(partial: Partial<typeof this.touchInput>) {
     Object.assign(this.touchInput, partial);
@@ -590,6 +634,8 @@ export class Engine {
         this.player.vel.set(0, 0, 0);
         this.player.yaw = p.yaw ?? 0;
         this.player.pitch = p.pitch ?? 0;
+        (this.player as unknown as { _targetYaw: number })._targetYaw = p.yaw ?? 0;
+        (this.player as unknown as { _targetPitch: number })._targetPitch = p.pitch ?? 0;
         this.player.health = p.health ?? 20;
         this.player.hunger = p.hunger ?? 20;
         this.player.flying = p.flying ?? false;
@@ -893,7 +939,8 @@ export class Engine {
 
   private updateSelectionBox() {
     if (!this.selectionBox) return;
-    const hit = this.player.raycast(REACH_DISTANCE);
+    // reuse the per-frame raycast computed in the loop (no new DDA)
+    const hit = this._frameRaycast;
     if (hit) {
       this.selectionBox.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
       this.selectionBox.visible = true;
@@ -980,11 +1027,7 @@ export class Engine {
     }
 
     const warmth = Math.max(0, 1 - Math.abs(sunY) * 2.2);
-    const sunColor = new THREE.Color().lerpColors(
-      new THREE.Color("#fff2d8"),
-      new THREE.Color("#ff9a3a"),
-      warmth
-    );
+    const sunColor = this._sunColor.lerpColors(this.C_SUN_WARM, this.C_SUN_SUNSET, warmth);
     if (this.raining) sunColor.multiplyScalar(0.7);
     this.sun.color.copy(sunColor);
     this.sun.intensity = sunI * this.settings.brightness;
@@ -1087,10 +1130,14 @@ export class Engine {
       }
     }
 
-    // block-break progress tracking (for crack overlay)
-    if (this.inputEnabled && this.pointerLocked && this.mouseButtons.has(0)) {
+    // block-break progress tracking + selection box: ONE raycast per frame
+    if (this.inputEnabled) {
       const hit = this.player.raycast(REACH_DISTANCE);
-      if (hit) {
+      this._frameRaycast = hit;
+      const breaking =
+        (this.pointerLocked && this.mouseButtons.has(0)) ||
+        this.touchInput.breakBtn;
+      if (hit && breaking) {
         if (
           this.targetBlock &&
           this.targetBlock.x === hit.x &&
@@ -1107,6 +1154,7 @@ export class Engine {
         this.breakProgress = 0;
       }
     } else {
+      this._frameRaycast = null;
       this.targetBlock = null;
       this.breakProgress = 0;
     }

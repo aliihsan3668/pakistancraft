@@ -55,6 +55,11 @@ export class Player {
   private wasOnGround = true;
   private hungerTimer = 0;
   private regenTimer = 0;
+  // cached math objects (avoid per-frame allocation)
+  private _camQuat = new THREE.Quaternion();
+  private _camEuler = new THREE.Euler(0, 0, 0, "YXZ");
+  private _rayOrigin = new THREE.Vector3();
+  private _rayDir = new THREE.Vector3();
 
   constructor(world: World, camera: THREE.PerspectiveCamera, x: number, y: number, z: number) {
     this.world = world;
@@ -92,11 +97,15 @@ export class Player {
   }
 
   setLookFromDelta(dx: number, dy: number, sensitivity = 0.0022) {
-    this.yaw -= dx * sensitivity;
-    this.pitch -= dy * sensitivity;
+    // smoothed look: blend target into current for buttery camera
+    this._targetYaw -= dx * sensitivity;
+    this._targetPitch -= dy * sensitivity;
     const lim = Math.PI / 2 - 0.01;
-    this.pitch = Math.max(-lim, Math.min(lim, this.pitch));
+    this._targetPitch = Math.max(-lim, Math.min(lim, this._targetPitch));
   }
+
+  private _targetYaw = 0;
+  private _targetPitch = 0;
 
   toggleFly() {
     this.flying = !this.flying;
@@ -104,6 +113,11 @@ export class Player {
   }
 
   update(dt: number) {
+    // Smooth look: interpolate yaw/pitch toward target (frame-rate independent)
+    const lookLerp = 1 - Math.pow(0.001, dt); // ~0.8 at 60fps
+    this.yaw += (this._targetYaw - this.yaw) * lookLerp;
+    this.pitch += (this._targetPitch - this.pitch) * lookLerp;
+
     // Determine if eye is in water
     const eyeBlock = this.world.getBlock(
       Math.floor(this.pos.x),
@@ -267,8 +281,9 @@ export class Player {
       this.pos.y + PLAYER_EYE + bobY,
       this.pos.z
     );
-    const q = new THREE.Quaternion();
-    q.setFromEuler(new THREE.Euler(this.pitch, this.yaw, 0, "YXZ"));
+    const q = this._camQuat;
+    const e = this._camEuler.set(this.pitch, this.yaw, 0, "YXZ");
+    q.setFromEuler(e);
     this.camera.quaternion.copy(q);
   }
 
@@ -332,62 +347,60 @@ export class Player {
     ny: number;
     nz: number;
   } | null {
-    // DDA voxel traversal
-    const origin = this.camera.position.clone();
-    const dir = new THREE.Vector3();
+    // DDA voxel traversal — uses cached vectors, no per-call allocation
+    const origin = this._rayOrigin.copy(this.camera.position);
+    const dir = this._rayDir;
     this.camera.getWorldDirection(dir);
 
     let x = Math.floor(origin.x);
     let y = Math.floor(origin.y);
     let z = Math.floor(origin.z);
 
-    const stepX = Math.sign(dir.x);
-    const stepY = Math.sign(dir.y);
-    const stepZ = Math.sign(dir.z);
+    const stepX = dir.x > 0 ? 1 : dir.x < 0 ? -1 : 0;
+    const stepY = dir.y > 0 ? 1 : dir.y < 0 ? -1 : 0;
+    const stepZ = dir.z > 0 ? 1 : dir.z < 0 ? -1 : 0;
 
     const tDeltaX = dir.x !== 0 ? Math.abs(1 / dir.x) : Infinity;
     const tDeltaY = dir.y !== 0 ? Math.abs(1 / dir.y) : Infinity;
     const tDeltaZ = dir.z !== 0 ? Math.abs(1 / dir.z) : Infinity;
 
-    const distToBoundary = (o: number, s: number) => {
-      if (s > 0) return Math.floor(o) + 1 - o;
-      if (s < 0) return o - Math.floor(o);
-      return Infinity;
-    };
-    let tMaxX = dir.x !== 0 ? distToBoundary(origin.x, stepX) * tDeltaX : Infinity;
-    let tMaxY = dir.y !== 0 ? distToBoundary(origin.y, stepY) * tDeltaY : Infinity;
-    let tMaxZ = dir.z !== 0 ? distToBoundary(origin.z, stepZ) * tDeltaZ : Infinity;
+    // inline distToBoundary (avoid closure allocation)
+    const ox = origin.x, oy = origin.y, oz = origin.z;
+    let tMaxX: number;
+    if (stepX > 0) tMaxX = (Math.floor(ox) + 1 - ox) * tDeltaX;
+    else if (stepX < 0) tMaxX = (ox - Math.floor(ox)) * tDeltaX;
+    else tMaxX = Infinity;
+    let tMaxY: number;
+    if (stepY > 0) tMaxY = (Math.floor(oy) + 1 - oy) * tDeltaY;
+    else if (stepY < 0) tMaxY = (oy - Math.floor(oy)) * tDeltaY;
+    else tMaxY = Infinity;
+    let tMaxZ: number;
+    if (stepZ > 0) tMaxZ = (Math.floor(oz) + 1 - oz) * tDeltaZ;
+    else if (stepZ < 0) tMaxZ = (oz - Math.floor(oz)) * tDeltaZ;
+    else tMaxZ = Infinity;
 
-    let nx = 0,
-      ny = 0,
-      nz = 0;
+    let nx = 0, ny = 0, nz = 0;
     let t = 0;
     while (t <= maxDist) {
       const b = this.world.getBlock(x, y, z);
-      if (b !== Block.AIR && !isLiquid(b)) {
+      if (b !== Block.AIR && b !== Block.WATER && b !== Block.ICE) {
         return { x, y, z, nx, ny, nz };
       }
       if (tMaxX < tMaxY && tMaxX < tMaxZ) {
         x += stepX;
         t = tMaxX;
         tMaxX += tDeltaX;
-        nx = -stepX;
-        ny = 0;
-        nz = 0;
+        nx = -stepX; ny = 0; nz = 0;
       } else if (tMaxY < tMaxZ) {
         y += stepY;
         t = tMaxY;
         tMaxY += tDeltaY;
-        nx = 0;
-        ny = -stepY;
-        nz = 0;
+        nx = 0; ny = -stepY; nz = 0;
       } else {
         z += stepZ;
         t = tMaxZ;
         tMaxZ += tDeltaZ;
-        nx = 0;
-        ny = 0;
-        nz = -stepZ;
+        nx = 0; ny = 0; nz = -stepZ;
       }
     }
     return null;

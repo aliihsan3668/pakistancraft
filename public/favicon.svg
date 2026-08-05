@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#01411C"/>
+      <stop offset="100%" stop-color="#0a5a30"/>
+    </linearGradient>
+    <linearGradient id="grassTop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#5fa848"/>
+      <stop offset="100%" stop-color="#3c6e2a"/>
+    </linearGradient>
+    <linearGradient id="dirt" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#9a6a3a"/>
+      <stop offset="100%" stop-color="#6a4a2a"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f0d060"/>
+      <stop offset="100%" stop-color="#c89030"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="12" fill="url(#bg)"/>
+  <!-- isometric cube -->
+  <g transform="translate(32,30)">
+    <!-- top face (grass) -->
+    <polygon points="0,-18 18,-9 0,0 -18,-9" fill="url(#grassTop)" stroke="#2a4a1a" stroke-width="0.8"/>
+    <!-- left face (dirt) -->
+    <polygon points="-18,-9 0,0 0,18 -18,9" fill="url(#dirt)" stroke="#3a2a1a" stroke-width="0.8"/>
+    <!-- right face (dirt darker) -->
+    <polygon points="18,-9 0,0 0,18 18,9" fill="#5a3a20" stroke="#3a2a1a" stroke-width="0.8"/>
+    <!-- gold accent dot (crescent hint) -->
+    <circle cx="0" cy="-10" r="3" fill="url(#gold)"/>
+  </g>
+  <!-- small crescent -->
+  <g transform="translate(48,14)">
+    <circle r="5" fill="#fff" opacity="0.9"/>
+    <circle cx="2" r="4" fill="url(#bg)"/>
+  </g>
+</svg>

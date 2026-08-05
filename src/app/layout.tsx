@@ -15,12 +15,15 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "PakistanCraft — Voxel Sandbox",
-  description: "An original voxel sandbox set across Pakistan. Explore Punjab plains, Sindh deserts, Balochistan mountains, Khyber forests and the Gilgit snow peaks. Build, mine, and craft.",
-  keywords: ["PakistanCraft", "voxel", "sandbox", "Pakistan", "Three.js", "block game"],
+  description: "An original voxel sandbox set across Pakistan. Explore Lahore's Badshahi Mosque, Minar-e-Pakistan, Shalimar Gardens and more. Build, mine, and craft your corner of the homeland.",
+  keywords: ["PakistanCraft", "voxel", "sandbox", "Pakistan", "Lahore", "Three.js", "block game"],
   authors: [{ name: "PakistanCraft" }],
   icons: {
-    icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
+    icon: "/favicon.svg",
+    shortcut: "/favicon.svg",
+    apple: "/favicon.svg",
   },
+  manifest: "/manifest.json",
 };
 
 export default function RootLayout({

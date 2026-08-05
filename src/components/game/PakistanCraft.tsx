@@ -52,6 +52,7 @@ export default function PakistanCraft() {
     typeof window !== "undefined" ? loadSettings() : DEFAULT_SETTINGS
   );
   const [toast, setToast] = useState<string | null>(null);
+  const [engineState, setEngineState] = useState<Engine | null>(null);
   const isTouch = useIsTouchDevice();
 
   // refresh save flag when returning to start screen
@@ -110,6 +111,7 @@ export default function PakistanCraft() {
       return;
     }
     engineRef.current = eng;
+    setEngineState(eng);
     const raf2 = requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         try {
@@ -133,6 +135,7 @@ export default function PakistanCraft() {
       cancelAnimationFrame(raf2);
       eng?.dispose();
       engineRef.current = null;
+      setEngineState(null);
     };
   }, [phase, showToast]);
 
@@ -281,7 +284,7 @@ export default function PakistanCraft() {
       {phase === "playing" && hud && (
         <>
           <Hud hud={hud} />
-          <Minimap hud={hud} />
+          <Minimap hud={hud} engine={engineState} />
           {isTouch && !paused && !showSettings && !showInventory && (
             <TouchControls
               onMove={(x, y) => engineRef.current?.setTouchInput({ moveX: x, moveY: y })}

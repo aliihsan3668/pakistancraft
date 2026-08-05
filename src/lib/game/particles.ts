@@ -10,6 +10,8 @@ interface Particle {
   maxLife: number;
   size: number;
   tile: number;
+  uMid: number; // cached UV center (avoid per-frame tileUV calls)
+  vMid: number;
 }
 
 export class ParticleSystem {
@@ -81,8 +83,15 @@ export class ParticleSystem {
     // use the side tile texture for the particles
     const tile = def.tiles[1];
     const uv = tileUV(tile);
+    const uMid = (uv.u0 + uv.u1) * 0.5;
+    const vMid = (uv.v0 + uv.v1) * 0.5;
     for (let i = 0; i < count; i++) {
-      if (this.particles.length >= this.maxParticles) this.particles.shift();
+      // swap-and-pop instead of shift() (O(1) vs O(n))
+      if (this.particles.length >= this.maxParticles) {
+        const last = this.particles.length - 1;
+        this.particles[0] = this.particles[last];
+        this.particles.pop();
+      }
       const px = x + 0.2 + Math.random() * 0.6;
       const py = y + 0.2 + Math.random() * 0.6;
       const pz = z + 0.2 + Math.random() * 0.6;
@@ -97,8 +106,9 @@ export class ParticleSystem {
         maxLife: 0.6 + Math.random() * 0.4,
         size: 4 + Math.random() * 4,
         tile,
+        uMid,
+        vMid,
       });
-      void uv;
     }
   }
 
@@ -108,41 +118,53 @@ export class ParticleSystem {
     const uvAttr = this.geometry.getAttribute("aTileUv") as THREE.BufferAttribute;
     const alphaAttr = this.geometry.getAttribute("alpha") as THREE.BufferAttribute;
 
-    // update particles
-    for (let i = this.particles.length - 1; i >= 0; i--) {
+    // update particles — swap-and-pop for dead ones (O(n) total, no splice)
+    const n = this.particles.length;
+    let w = 0;
+    for (let i = 0; i < n; i++) {
       const p = this.particles[i];
       p.life += dt;
-      if (p.life >= p.maxLife) {
-        this.particles.splice(i, 1);
-        continue;
-      }
+      if (p.life >= p.maxLife) continue; // dead: skip, will be overwritten
+      if (w !== i) this.particles[w] = p;
+      w++;
       p.vel.y -= 18 * dt; // gravity
       p.pos.addScaledVector(p.vel, dt);
     }
+    this.particles.length = w;
 
-    // write to buffers
-    const n = this.maxParticles;
-    for (let i = 0; i < n; i++) {
-      if (i < this.particles.length) {
+    // write to buffers — only up to alive count, use cached uMid/vMid
+    const alive = w;
+    const max = this.maxParticles;
+    for (let i = 0; i < max; i++) {
+      if (i < alive) {
         const p = this.particles[i];
-        posAttr.array[i * 3] = p.pos.x;
-        posAttr.array[i * 3 + 1] = p.pos.y;
-        posAttr.array[i * 3 + 2] = p.pos.z;
-        sizeAttr.array[i] = p.size;
-        const uv = tileUV(p.tile);
-        uvAttr.array[i * 2] = (uv.u0 + uv.u1) * 0.5;
-        uvAttr.array[i * 2 + 1] = (uv.v0 + uv.v1) * 0.5;
-        alphaAttr.array[i] = 1 - p.life / p.maxLife;
+        (posAttr.array as Float32Array)[i * 3] = p.pos.x;
+        (posAttr.array as Float32Array)[i * 3 + 1] = p.pos.y;
+        (posAttr.array as Float32Array)[i * 3 + 2] = p.pos.z;
+        (sizeAttr.array as Float32Array)[i] = p.size;
+        (uvAttr.array as Float32Array)[i * 2] = p.uMid;
+        (uvAttr.array as Float32Array)[i * 2 + 1] = p.vMid;
+        (alphaAttr.array as Float32Array)[i] = 1 - p.life / p.maxLife;
       } else {
-        sizeAttr.array[i] = 0;
-        alphaAttr.array[i] = 0;
+        (sizeAttr.array as Float32Array)[i] = 0;
+        (alphaAttr.array as Float32Array)[i] = 0;
       }
     }
-    posAttr.needsUpdate = true;
-    sizeAttr.needsUpdate = true;
-    uvAttr.needsUpdate = true;
-    alphaAttr.needsUpdate = true;
-    this.geometry.setDrawRange(0, n);
+    // skip GPU upload when no particles alive
+    if (alive > 0) {
+      posAttr.needsUpdate = true;
+      sizeAttr.needsUpdate = true;
+      uvAttr.needsUpdate = true;
+      alphaAttr.needsUpdate = true;
+      this.geometry.setDrawRange(0, alive);
+    } else {
+      this.geometry.setDrawRange(0, 0);
+    }
+  }
+
+  dispose() {
+    this.geometry.dispose();
+    this.material.dispose();
   }
 }
 

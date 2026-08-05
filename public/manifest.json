@@ -1,0 +1,17 @@
+{
+  "name": "PakistanCraft — Voxel Sandbox",
+  "short_name": "PakistanCraft",
+  "description": "An original voxel sandbox set across Pakistan. Explore Lahore's landmarks, build, mine, and craft.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#01411C",
+  "theme_color": "#01411C",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

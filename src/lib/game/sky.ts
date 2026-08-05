@@ -14,6 +14,27 @@ export class Sky {
   skyColor = new THREE.Color("#87b6e8");
   fogColor = new THREE.Color("#bcd8ee");
 
+  // --- reusable temporaries (avoid per-frame allocations) ---
+  private _sunDir = new THREE.Vector3();
+  // static color constants (never re-allocated)
+  private C_NIGHT = new THREE.Color("#0a1430");
+  private C_DAY = new THREE.Color("#7ab2e0");
+  private C_DAY_TOP = new THREE.Color("#3a78c8");
+  private C_SUNSET = new THREE.Color("#e89a5a");
+  private C_SUNSET_HORIZON = new THREE.Color("#ffb878");
+  private C_BOTTOM_DAY = new THREE.Color("#cdd8e8");
+  private C_SUN_GLOW_DAY = new THREE.Color("#fff0c0");
+  private C_SUN_GLOW_SUNSET = new THREE.Color("#ff9a3a");
+  private C_NIGHT_HORIZON = new THREE.Color("#1a2848");
+  private C_SUN_GLOW_NIGHT = new THREE.Color("#3a4870");
+  private C_SUN_DISC = new THREE.Color("#fff8e0");
+  // reusable output colors
+  private _top = new THREE.Color();
+  private _horizon = new THREE.Color();
+  private _bottom = new THREE.Color();
+  private _sunGlow = new THREE.Color();
+  private _tmpColor = new THREE.Color();
+
   constructor(scene: THREE.Scene) {
     this.scene = scene;
 
@@ -155,7 +176,7 @@ export class Sky {
     const sunY = Math.sin(ang);
     const sunX = Math.cos(ang);
     const sunZ = 0.3;
-    const sunDir = new THREE.Vector3(sunX, sunY, sunZ).normalize();
+    const sunDir = this._sunDir.set(sunX, sunY, sunZ).normalize();
     const dist = 500;
 
     // sun position
@@ -182,39 +203,33 @@ export class Sky {
     (this.stars.material as THREE.ShaderMaterial).uniforms.uOpacity.value =
       Math.min(1, starOpacity);
 
-    // sky colors
-    const night = new THREE.Color("#0a1430");
-    const day = new THREE.Color("#7ab2e0");
-    const dayTop = new THREE.Color("#3a78c8");
-    const sunset = new THREE.Color("#e89a5a");
-    const sunsetHorizon = new THREE.Color("#ffb878");
-
-    let top: THREE.Color;
-    let horizon: THREE.Color;
-    let bottom: THREE.Color;
-    let sunGlow: THREE.Color;
+    // sky colors — use cached color fields, no per-frame allocation
+    const top = this._top;
+    const horizon = this._horizon;
+    const bottom = this._bottom;
+    const sunGlow = this._sunGlow;
 
     if (sunY > 0.2) {
       // full day
-      top = dayTop.clone();
-      horizon = day.clone();
-      bottom = new THREE.Color("#cdd8e8");
-      sunGlow = new THREE.Color("#fff0c0");
+      top.copy(this.C_DAY_TOP);
+      horizon.copy(this.C_DAY);
+      bottom.copy(this.C_BOTTOM_DAY);
+      sunGlow.copy(this.C_SUN_GLOW_DAY);
     } else if (sunY > -0.2) {
       // sunrise / sunset transition
       const k = (sunY + 0.2) / 0.4; // 0..1
-      top = night.clone().lerp(dayTop, k);
-      horizon = sunsetHorizon.clone().lerp(day, k);
-      bottom = night.clone().lerp(new THREE.Color("#cdd8e8"), k);
-      sunGlow = new THREE.Color("#ff9a3a").lerp(new THREE.Color("#fff0c0"), k);
+      top.copy(this.C_NIGHT).lerp(this.C_DAY_TOP, k);
+      horizon.copy(this.C_SUNSET_HORIZON).lerp(this.C_DAY, k);
+      bottom.copy(this.C_NIGHT).lerp(this.C_BOTTOM_DAY, k);
+      sunGlow.copy(this.C_SUN_GLOW_SUNSET).lerp(this.C_SUN_GLOW_DAY, k);
       // tint horizon warm
-      horizon.lerp(sunsetHorizon, (1 - Math.abs(sunY) / 0.2) * 0.5);
+      horizon.lerp(this.C_SUNSET_HORIZON, (1 - Math.abs(sunY) / 0.2) * 0.5);
     } else {
       // night
-      top = night.clone();
-      horizon = new THREE.Color("#1a2848");
-      bottom = night.clone();
-      sunGlow = new THREE.Color("#3a4870");
+      top.copy(this.C_NIGHT);
+      horizon.copy(this.C_NIGHT_HORIZON);
+      bottom.copy(this.C_NIGHT);
+      sunGlow.copy(this.C_SUN_GLOW_NIGHT);
     }
 
     const domeMat = this.dome.material as THREE.ShaderMaterial;
@@ -227,12 +242,23 @@ export class Sky {
     // sun disc visibility + color
     const sunMat = this.sunMesh.material as THREE.MeshBasicMaterial;
     sunMat.visible = sunY > -0.15;
-    sunMat.color.copy(sunGlow).lerp(new THREE.Color("#fff8e0"), Math.max(0, sunY));
+    sunMat.color.copy(sunGlow).lerp(this.C_SUN_DISC, Math.max(0, sunY));
     const moonMat = this.moonMesh.material as THREE.MeshBasicMaterial;
     moonMat.visible = sunY < 0.15;
 
     // expose for fog
     this.skyColor.copy(horizon);
     this.fogColor.copy(horizon);
+  }
+
+  dispose() {
+    this.dome.geometry.dispose();
+    (this.dome.material as THREE.Material).dispose();
+    this.sunMesh.geometry.dispose();
+    (this.sunMesh.material as THREE.Material).dispose();
+    this.moonMesh.geometry.dispose();
+    (this.moonMesh.material as THREE.Material).dispose();
+    this.stars.geometry.dispose();
+    (this.stars.material as THREE.Material).dispose();
   }
 }

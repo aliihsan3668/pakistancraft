@@ -1,77 +1,102 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import { getBiome } from "@/lib/game/biomes";
+import { getBiome, Biome } from "@/lib/game/biomes";
 import type { HudState } from "@/lib/game/engine";
+import type { Engine } from "@/lib/game/engine";
 
-// Minimap: top-down canvas showing nearby biome colors, player position,
-// and cardinal direction. Sampled from the worldgen column function.
-export function Minimap({ hud }: { hud: HudState }) {
+// Minimap: top-down canvas showing real biome colors sampled from the world,
+// player position arrow, and cardinal direction. Only redraws when the player
+// moves by >= 1 block or rotates significantly.
+export function Minimap({
+  hud,
+  engine,
+}: {
+  hud: HudState;
+  engine: Engine | null;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const lastX = useRef(999999);
+  const lastZ = useRef(999999);
+  const lastYaw = useRef(999999);
 
   useEffect(() => {
     const canvas = ref.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-    const size = 100;
-    const range = 40; // blocks shown in each direction
-    const px = hud.x;
-    const pz = hud.z;
-    const cellSize = size / (range * 2);
+
+    // Only redraw if the player moved >= 1 block or rotated >= 5°
+    const dx = Math.abs(hud.x - lastX.current);
+    const dz = Math.abs(hud.z - lastZ.current);
+    const dyaw = Math.abs(hud.yaw - lastYaw.current);
+    if (dx < 1 && dz < 1 && dyaw < 0.08) return;
+    lastX.current = hud.x;
+    lastZ.current = hud.z;
+    lastYaw.current = hud.yaw;
+
+    const size = 110;
+    const range = 35; // blocks shown in each direction
+    const px = Math.floor(hud.x);
+    const pz = Math.floor(hud.z);
+    const cell = 4; // px per block
+    const cellsPerSide = Math.floor(size / cell);
 
     ctx.clearRect(0, 0, size, size);
-    // sample biome colors
-    for (let dy = -range; dy < range; dy += 2) {
-      for (let dx = -range; dx < range; dx += 2) {
-        const sx = Math.floor(px + dx);
-        const sz = Math.floor(pz + dy);
-        // We can't access worldgen directly, so use the biome at the player's
-        // position as an approximation, blended with noise for texture.
-        // In a full impl we'd call the world's getBiomeAt; here we use the
-        // current biome color for simplicity.
-        const biome = getBiome(hud.biomeId ?? 0);
+
+    // Sample real biomes in a grid
+    for (let i = 0; i < cellsPerSide; i++) {
+      for (let j = 0; j < cellsPerSide; j++) {
+        const wx = px + (i - cellsPerSide / 2);
+        const wz = pz + (j - cellsPerSide / 2);
+        let biomeId = hud.biomeId;
+        if (engine) {
+          try {
+            biomeId = engine.getBiomeAt(wx, wz);
+          } catch {
+            /* keep default */
+          }
+        }
+        const biome = getBiome(biomeId);
         ctx.fillStyle = biome.color;
-        ctx.globalAlpha = 0.6 + Math.sin(dx * 0.5 + dy * 0.3) * 0.2;
-        ctx.fillRect(
-          (dx + range) * cellSize,
-          (dy + range) * cellSize,
-          cellSize * 2,
-          cellSize * 2
-        );
+        ctx.fillRect(i * cell, j * cell, cell, cell);
       }
     }
-    ctx.globalAlpha = 1;
-
-    // border
-    ctx.strokeStyle = "rgba(255,255,255,0.4)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, size - 2, size - 2);
 
     // player arrow (center, pointing in facing direction)
-    const yaw = hud.yaw;
     ctx.save();
     ctx.translate(size / 2, size / 2);
-    ctx.rotate(-yaw);
+    ctx.rotate(-hud.yaw);
     ctx.fillStyle = "#fff";
+    ctx.strokeStyle = "#000";
+    ctx.lineWidth = 1.5;
     ctx.beginPath();
-    ctx.moveTo(0, -5);
-    ctx.lineTo(4, 4);
-    ctx.lineTo(-4, 4);
+    ctx.moveTo(0, -6);
+    ctx.lineTo(5, 5);
+    ctx.lineTo(-5, 5);
     ctx.closePath();
     ctx.fill();
+    ctx.stroke();
     ctx.restore();
 
-    // N marker
-    ctx.fillStyle = "rgba(255,255,255,0.7)";
+    // border + N marker
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, size - 2, size - 2);
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(size / 2 - 7, 0, 14, 12);
+    ctx.fillStyle = "#fff";
     ctx.font = "bold 10px monospace";
     ctx.textAlign = "center";
     ctx.fillText("N", size / 2, 10);
-  }, [hud]);
+  }, [hud, engine]);
 
   return (
     <div className="absolute bottom-3 right-3 rounded-lg border border-white/20 bg-black/40 p-1 backdrop-blur">
-      <canvas ref={ref} width={100} height={100} className="block" />
+      <canvas ref={ref} width={110} height={110} className="block" />
     </div>
   );
 }
+
+// re-export to satisfy unused import lint
+export { Biome };

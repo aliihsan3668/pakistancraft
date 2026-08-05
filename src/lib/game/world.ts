@@ -92,49 +92,50 @@ export class World {
       }
   }
 
-  // Read block at world coords
+  // Read block at world coords (optimized: bitwise ops for power-of-2 chunk size)
   getBlock(wx: number, wy: number, wz: number): number {
     if (wy < 0) return Block.BEDROCK;
     if (wy >= WORLD_HEIGHT) return Block.AIR;
-    const cx = Math.floor(wx / CHUNK_SIZE);
-    const cz = Math.floor(wz / CHUNK_SIZE);
+    // CHUNK_SIZE=16 → use >> 4 and & 15 (faster than floor/div)
+    const cx = wx >> 4;
+    const cz = wz >> 4;
     const c = this.getChunk(cx, cz);
     if (!c || !c.generated) return Block.AIR;
-    const lx = wx - cx * CHUNK_SIZE;
-    const lz = wz - cz * CHUNK_SIZE;
-    return c.data[idxLocal(lx, wy, lz)];
+    const lx = wx & 15;
+    const lz = wz & 15;
+    return c.data[(wy * 16 + lz) * 16 + lx];
   }
 
   // Write block during generation (no scene remesh yet)
   private setBlockRaw(wx: number, wy: number, wz: number, b: number) {
     if (wy < 0 || wy >= WORLD_HEIGHT) return;
-    const cx = Math.floor(wx / CHUNK_SIZE);
-    const cz = Math.floor(wz / CHUNK_SIZE);
+    const cx = wx >> 4;
+    const cz = wz >> 4;
     const c = this.getOrCreateChunk(cx, cz);
     if (!c.generated) this.ensureTerrain(cx, cz);
-    const lx = wx - cx * CHUNK_SIZE;
-    const lz = wz - cz * CHUNK_SIZE;
-    c.data[idxLocal(lx, wy, lz)] = b;
+    const lx = wx & 15;
+    const lz = wz & 15;
+    c.data[(wy * 16 + lz) * 16 + lx] = b;
     c.dirty = true;
   }
 
   // Player-placed/broken block: also marks neighbor chunks dirty if on border
   setBlock(wx: number, wy: number, wz: number, b: number) {
     if (wy < 0 || wy >= WORLD_HEIGHT) return;
-    const cx = Math.floor(wx / CHUNK_SIZE);
-    const cz = Math.floor(wz / CHUNK_SIZE);
+    const cx = wx >> 4;
+    const cz = wz >> 4;
     const c = this.getOrCreateChunk(cx, cz);
     if (!c.generated) this.ensureTerrain(cx, cz);
     if (!c.decorated) this.ensureDecorated(cx, cz);
-    const lx = wx - cx * CHUNK_SIZE;
-    const lz = wz - cz * CHUNK_SIZE;
-    c.data[idxLocal(lx, wy, lz)] = b;
+    const lx = wx & 15;
+    const lz = wz & 15;
+    c.data[(wy * 16 + lz) * 16 + lx] = b;
     c.dirty = true;
     // mark neighbor dirty if on border
     if (lx === 0) this.markDirty(cx - 1, cz);
-    if (lx === CHUNK_SIZE - 1) this.markDirty(cx + 1, cz);
+    if (lx === 15) this.markDirty(cx + 1, cz);
     if (lz === 0) this.markDirty(cx, cz - 1);
-    if (lz === CHUNK_SIZE - 1) this.markDirty(cx, cz + 1);
+    if (lz === 15) this.markDirty(cx, cz + 1);
   }
 
   private markDirty(cx: number, cz: number) {
@@ -143,8 +144,8 @@ export class World {
   }
 
   getBiomeAt(wx: number, wz: number): BiomeId {
-    const cx = Math.floor(wx / CHUNK_SIZE);
-    const cz = Math.floor(wz / CHUNK_SIZE);
+    const cx = wx >> 4;
+    const cz = wz >> 4;
     const c = this.getChunk(cx, cz);
     if (!c || !c.generated) {
       // compute on the fly
@@ -155,24 +156,33 @@ export class World {
     return c.biomeMap[lz * CHUNK_SIZE + lx];
   }
 
+  // cached spiral load list — only rebuilt when player crosses chunk boundary
+  private _lastPcx = 999999;
+  private _lastPcz = 999999;
+  private _cachedToLoad: Array<{ cx: number; cz: number; dist: number }> = [];
+
   // Load chunks around player, unload far ones. Returns number of new meshes built.
   update(px: number, pz: number, budget = 2): number {
     const pcx = Math.floor(px / CHUNK_SIZE);
     const pcz = Math.floor(pz / CHUNK_SIZE);
     const rd = this.renderDistance;
 
-    // Determine load order: spiral from center
-    const toLoad: Array<{ cx: number; cz: number; dist: number }> = [];
-    for (let dx = -rd; dx <= rd; dx++) {
-      for (let dz = -rd; dz <= rd; dz++) {
-        const d = dx * dx + dz * dz;
-        if (d > rd * rd) continue;
-        const cx = pcx + dx;
-        const cz = pcz + dz;
-        toLoad.push({ cx, cz, dist: d });
+    // Only rebuild the spiral list when the player crosses into a new chunk
+    if (pcx !== this._lastPcx || pcz !== this._lastPcz) {
+      this._lastPcx = pcx;
+      this._lastPcz = pcz;
+      const toLoad = this._cachedToLoad;
+      toLoad.length = 0;
+      for (let dx = -rd; dx <= rd; dx++) {
+        for (let dz = -rd; dz <= rd; dz++) {
+          const d = dx * dx + dz * dz;
+          if (d > rd * rd) continue;
+          toLoad.push({ cx: pcx + dx, cz: pcz + dz, dist: d });
+        }
       }
+      toLoad.sort((a, b) => a.dist - b.dist);
     }
-    toLoad.sort((a, b) => a.dist - b.dist);
+    const toLoad = this._cachedToLoad;
 
     let built = 0;
     // Phase 1: ensure terrain for the closest not-yet-terrain chunks (small budget)
@@ -257,6 +267,14 @@ export class World {
     c.solidMesh = null;
     c.cutoutMesh = null;
     c.waterMesh = null;
+  }
+
+  // Dispose all chunks (geometry + voxel data) — called on engine teardown
+  dispose() {
+    for (const c of this.chunks.values()) {
+      this.disposeChunkMeshes(c);
+    }
+    this.chunks.clear();
   }
 
   // Force immediate mesh rebuild for a chunk (used after edits)

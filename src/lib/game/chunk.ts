@@ -219,11 +219,15 @@ export class Chunk {
     const solid = newLayer();
     const cutout = newLayer();
     const water = newLayer();
+    const data = this.data;
+    const CS = CHUNK_SIZE;
+    const WH = WORLD_HEIGHT;
 
-    for (let lx = 0; lx < CHUNK_SIZE; lx++) {
-      for (let lz = 0; lz < CHUNK_SIZE; lz++) {
-        for (let y = 0; y < WORLD_HEIGHT; y++) {
-          const block = this.data[idx(lx, y, lz)];
+    for (let lx = 0; lx < CS; lx++) {
+      for (let lz = 0; lz < CS; lz++) {
+        for (let y = 0; y < WH; y++) {
+          // inline idx: (y*CS + lz)*CS + lx
+          const block = data[(y * CS + lz) * CS + lx];
           if (block === Block.AIR) continue;
           const def = BLOCKS[block];
           if (!def) continue;
@@ -238,55 +242,58 @@ export class Chunk {
 
           for (let f = 0; f < 6; f++) {
             const face = FACES[f];
-            const nx = wx + face.dir[0];
-            const ny = y + face.dir[1];
-            const nz = wz + face.dir[2];
-            const nb = getBlock(nx, ny, nz);
+            const nb = getBlock(wx + face.dir[0], y + face.dir[1], wz + face.dir[2]);
             if (!shouldRenderFace(block, nb)) continue;
 
             const tile = def.tiles[face.tileFace];
             const uv = tileUV(tile);
             const shade = face.shade;
+            const isTop = face.tileFace === 0;
+            const yOff = def.liquid && isTop ? -0.12 : 0;
 
-            // compute AO for each of the 4 corners
-            const ao: number[] = [];
-            for (let ci = 0; ci < 4; ci++) {
-              const c = face.corners[ci];
-              const dotU = c[0] * face.tu[0] + c[1] * face.tu[1] + c[2] * face.tu[2];
-              const dotV = c[0] * face.tv[0] + c[1] * face.tv[1] + c[2] * face.tv[2];
-              const ssu = dotU > 0 ? 1 : -1;
-              const ssv = dotV > 0 ? 1 : -1;
-              ao.push(
-                aoEnabled ? this.vertexAO(getBlock, wx, y, wz, face, ssu, ssv) : 3
-              );
+            // compute AO for 4 corners using named locals (no array alloc)
+            let ao0: number, ao1: number, ao2: number, ao3: number;
+            if (aoEnabled) {
+              const c0 = face.corners[0];
+              const c1 = face.corners[1];
+              const c2 = face.corners[2];
+              const c3 = face.corners[3];
+              const tu = face.tu, tv = face.tv;
+              const su0 = c0[0]*tu[0]+c0[1]*tu[1]+c0[2]*tu[2] > 0 ? 1 : -1;
+              const sv0 = c0[0]*tv[0]+c0[1]*tv[1]+c0[2]*tv[2] > 0 ? 1 : -1;
+              const su1 = c1[0]*tu[0]+c1[1]*tu[1]+c1[2]*tu[2] > 0 ? 1 : -1;
+              const sv1 = c1[0]*tv[0]+c1[1]*tv[1]+c1[2]*tv[2] > 0 ? 1 : -1;
+              const su2 = c2[0]*tu[0]+c2[1]*tu[1]+c2[2]*tu[2] > 0 ? 1 : -1;
+              const sv2 = c2[0]*tv[0]+c2[1]*tv[1]+c2[2]*tv[2] > 0 ? 1 : -1;
+              const su3 = c3[0]*tu[0]+c3[1]*tu[1]+c3[2]*tu[2] > 0 ? 1 : -1;
+              const sv3 = c3[0]*tv[0]+c3[1]*tv[1]+c3[2]*tv[2] > 0 ? 1 : -1;
+              ao0 = this.vertexAO(getBlock, wx, y, wz, face, su0, sv0);
+              ao1 = this.vertexAO(getBlock, wx, y, wz, face, su1, sv1);
+              ao2 = this.vertexAO(getBlock, wx, y, wz, face, su2, sv2);
+              ao3 = this.vertexAO(getBlock, wx, y, wz, face, su3, sv3);
+            } else {
+              ao0 = ao1 = ao2 = ao3 = 3;
             }
 
             const start = layer.positions.length / 3;
+            const corners = face.corners;
+            const tu = face.tu, tv = face.tv;
             // emit 4 vertices
             for (let ci = 0; ci < 4; ci++) {
-              const c = face.corners[ci];
-              // water top face: lower by 0.12 for a nicer look
-              const isTop = face.tileFace === 0;
-              const yOff = def.liquid && isTop ? -0.12 : 0;
+              const c = corners[ci];
               layer.positions.push(wx + c[0], y + c[1] + yOff, wz + c[2]);
-              layer.normals.push(
-                face.normal[0],
-                face.normal[1],
-                face.normal[2]
-              );
-              // UV: project corner onto tu/tv for uv coords
-              const dotU = c[0] * face.tu[0] + c[1] * face.tu[1] + c[2] * face.tu[2];
-              const dotV = c[0] * face.tv[0] + c[1] * face.tv[1] + c[2] * face.tv[2];
+              layer.normals.push(face.normal[0], face.normal[1], face.normal[2]);
+              const dotU = c[0]*tu[0] + c[1]*tu[1] + c[2]*tu[2];
+              const dotV = c[0]*tv[0] + c[1]*tv[1] + c[2]*tv[2];
               const uu = dotU > 0 ? uv.u1 : uv.u0;
               const vv = dotV > 0 ? uv.v1 : uv.v0;
               layer.uvs.push(uu, vv);
-              const a = AO_TABLE[ao[ci]];
+              const a = AO_TABLE[ci === 0 ? ao0 : ci === 1 ? ao1 : ci === 2 ? ao2 : ao3];
               const b = shade * a;
               layer.colors.push(b, b, b);
             }
             // flip quad diagonal if it produces smoother AO
-            // (avoid the harsh diagonal through two dark corners)
-            if (ao[0] + ao[2] > ao[1] + ao[3]) {
+            if (ao0 + ao2 > ao1 + ao3) {
               layer.indices.push(start, start + 1, start + 2);
               layer.indices.push(start, start + 2, start + 3);
             } else {
