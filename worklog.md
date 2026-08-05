@@ -160,3 +160,25 @@ Work Log:
 
 Stage Summary:
 - Eliminated ~700-1000 per-frame object allocations (sky 12-16/frame, player 5/frame, particles 600/frame, chunk 2000/build), combined 2-3 raycasts into 1/frame, cached world spiral list, bitwise block access, proper resource disposal (no more GPU leaks), smoothed camera, real biome minimap, custom PakistanCraft favicon + PWA manifest. Live at pakistancraft.vercel.app.
+
+---
+Task ID: 7
+Agent: main (Z.ai Code)
+Task: Refine and make even better — better controls, amazing visuals, polish everything.
+
+Work Log:
+- **Sneak crouch** (`player.ts`): Holding Ctrl now smoothly lowers the camera eye height by 0.3 blocks (interpolated) and reduces movement speed to 45%. Gives a proper crouch feel. Sprint is disabled while sneaking.
+- **Sprint FOV kick** (`player.ts` + `engine.ts`): Sprinting smoothly widens the camera FOV by +6° (interpolated), creating a speed sensation. Returns to normal when you stop sprinting. The engine applies the target FOV (`settings.fov + player.fovKick`) every frame with smooth lerp.
+- **Dot+ring crosshair** (`PakistanCraft.tsx`): Replaced the plain plus-sign crosshair with a center dot + outer ring. The ring **scales up and turns from white→orange→red** as break progress increases, giving visual feedback on how close the block is to breaking.
+- **Block name tooltip** (`PakistanCraft.tsx`): Added a tooltip above the hotbar showing the currently selected block's name (e.g. "Punjab Grass", "Lahore Brick").
+- **FPS color coding** (`PakistanCraft.tsx`): FPS counter now shows green (≥50), amber (≥30), or red (<30) for at-a-glance performance monitoring.
+- **Water specular shimmer** (`engine.ts`): Upgraded the water shader with sun-direction-based specular highlights (Blinn-Phong half-vector), approximate wave-derivative normals, depth-based color shift, and animated 3-wave displacement. Sun direction uniform updated each frame from the sky system.
+- **Animated start-screen logo** (`PakistanCraft.tsx`): The 5 voxel cubes in the logo now float up and down with a staggered 0.15s delay using a CSS `@keyframes pc-float` animation.
+- **H key — teleport to Lahore** (`engine.ts`): Press H to instantly teleport to the Lahore city center (40, 40). Useful for returning to the landmarks.
+- **Cleaner HUD layout**: Moved game mode to its own line in the info panel for better readability. Compass heading is now bold.
+- **Updated controls lists**: Start screen and pause overlay now document Ctrl (Sneak/Descend) and H (Teleport to Lahore).
+- Verified with agent-browser + VLM: 0 errors, dot+ring crosshair confirmed, block name tooltip ("Punjab Grass") confirmed, clean HUD with biome/coords/compass/FPS/mode, minimap with player arrow + N, H teleport works (coords → 40, 51, 40). VLM rated polish 7/10.
+- Pushed to GitHub, deployed to Vercel (pakistancraft.vercel.app).
+
+Stage Summary:
+- Sneak crouch, sprint FOV kick, dot+ring crosshair with break-progress color, block name tooltip, FPS color coding, water specular shimmer, animated logo, H teleport to Lahore. Live at pakistancraft.vercel.app.
