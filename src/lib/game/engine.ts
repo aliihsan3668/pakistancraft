@@ -132,8 +132,8 @@ export const CREATIVE_PALETTE: number[] = [
 
 const SAVE_KEY = "pakistancraft.save";
 
-// Custom water shader: animated vertex waves + flowing texture, respects
-// vertex color (AO/directional shade) and fog.
+// Custom water shader: animated vertex waves + specular shimmer + flowing texture,
+// respects vertex color (AO/directional shade) and fog.
 function makeWaterMaterial(atlas: THREE.Texture): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     transparent: true,
@@ -146,24 +146,32 @@ function makeWaterMaterial(atlas: THREE.Texture): THREE.ShaderMaterial {
       uFogColor: { value: new THREE.Color("#bcd8ee") },
       uFogNear: { value: 32 },
       uFogFar: { value: 72 },
-      uOpacity: { value: 0.78 },
+      uOpacity: { value: 0.82 },
+      uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+      uSunColor: { value: new THREE.Color("#fff0c0") },
     },
     vertexShader: /* glsl */ `
       attribute vec3 color;
       varying vec2 vUv;
       varying vec3 vColor;
+      varying vec3 vWorldPos;
       varying float vFogDepth;
+      varying float vIsTop;
       uniform float uTime;
       void main() {
         vUv = uv;
         vColor = color;
         vec3 pos = position;
-        // wave displacement on top faces (normal.y > 0.5)
-        if (normal.y > 0.5) {
-          float w = sin(pos.x * 0.8 + uTime * 1.5) * 0.04
-                  + cos(pos.z * 0.6 + uTime * 1.2) * 0.04;
+        vIsTop = normal.y > 0.5 ? 1.0 : 0.0;
+        // wave displacement on top faces
+        if (vIsTop > 0.5) {
+          float w = sin(pos.x * 0.8 + uTime * 1.5) * 0.05
+                  + cos(pos.z * 0.6 + uTime * 1.2) * 0.05
+                  + sin((pos.x + pos.z) * 0.4 + uTime * 0.8) * 0.03;
           pos.y += w;
         }
+        vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+        vWorldPos = worldPos.xyz;
         vec4 mv = modelViewMatrix * vec4(pos, 1.0);
         vFogDepth = -mv.z;
         gl_Position = projectionMatrix * mv;
@@ -176,18 +184,38 @@ function makeWaterMaterial(atlas: THREE.Texture): THREE.ShaderMaterial {
       uniform float uFogNear;
       uniform float uFogFar;
       uniform float uOpacity;
+      uniform vec3 uSunDir;
+      uniform vec3 uSunColor;
       varying vec2 vUv;
       varying vec3 vColor;
+      varying vec3 vWorldPos;
       varying float vFogDepth;
+      varying float vIsTop;
       void main() {
-        // scroll UVs slightly for a flowing feel
-        vec2 uv = vUv + vec2(uTime * 0.01, uTime * 0.015);
+        // scroll UVs for a flowing feel
+        vec2 uv = vUv + vec2(uTime * 0.012, uTime * 0.018);
         vec4 tex = texture2D(uAtlas, uv);
         vec3 col = tex.rgb * vColor;
+        // specular shimmer on top faces (sun glint)
+        if (vIsTop > 0.5) {
+          // approximate normal from wave derivatives
+          vec3 n = normalize(vec3(
+            cos(vWorldPos.x * 0.8 + uTime * 1.5) * 0.3,
+            1.0,
+            sin(vWorldPos.z * 0.6 + uTime * 1.2) * 0.3
+          ));
+          vec3 viewDir = normalize(cameraPosition - vWorldPos);
+          vec3 halfDir = normalize(normalize(uSunDir) + viewDir);
+          float spec = pow(max(dot(n, halfDir), 0.0), 32.0);
+          col += uSunColor * spec * 0.6;
+          // slight depth-based color shift (deeper = darker)
+          col *= 0.85 + 0.15 * smoothstep(0.0, 0.5, vColor.r);
+        }
         // fog
         float fogFactor = smoothstep(uFogNear, uFogFar, vFogDepth);
         col = mix(col, uFogColor, fogFactor);
-        gl_FragColor = vec4(col, uOpacity * (1.0 - fogFactor * 0.3));
+        float alpha = uOpacity * (1.0 - fogFactor * 0.2);
+        gl_FragColor = vec4(col, alpha);
       }
     `,
     vertexColors: true,
@@ -677,17 +705,19 @@ export class Engine {
       );
     }
     if (code === "KeyR") {
-      // rain toggle (debug / fun)
+      // rain toggle
       this.raining = !this.raining;
       this.weatherTimer = 120;
     }
     if (code === "KeyT") {
-      // set time to noon
-      this.setTimeOfDay(0.5);
+      this.setTimeOfDay(0.5); // noon
     }
     if (code === "KeyN") {
-      // set time to night
-      this.setTimeOfDay(0.0);
+      this.setTimeOfDay(0.0); // night
+    }
+    if (code === "KeyH") {
+      // teleport to Lahore city center
+      this.teleportTo(40, 40);
     }
     if (code === "Escape") {
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
@@ -1058,6 +1088,12 @@ export class Engine {
     wmat.uniforms.uFogColor.value.copy(this.sky.fogColor);
     wmat.uniforms.uFogNear.value = CHUNK_SIZE * 2;
     wmat.uniforms.uFogFar.value = CHUNK_SIZE * (this.settings.renderDistance - 0.5);
+    // sun direction for specular shimmer
+    const wAng = (this.timeOfDay - 0.25) * Math.PI * 2;
+    (wmat.uniforms.uSunDir.value as THREE.Vector3).set(
+      Math.cos(wAng), Math.sin(wAng), 0.3
+    ).normalize();
+    (wmat.uniforms.uSunColor.value as THREE.Color).copy(this.sun.color);
   }
 
   // ---- main loop ----
@@ -1172,6 +1208,13 @@ export class Engine {
     this.updateSky(dt);
     this.particles.update(dt);
     this.updateSelectionBox();
+
+    // FOV kick (sprint) — smooth apply to camera
+    const targetFov = this.settings.fov + this.player.fovKick;
+    if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+      this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.pow(0.001, dt));
+      this.camera.updateProjectionMatrix();
+    }
 
     // render
     this.renderer.render(this.scene, this.camera);

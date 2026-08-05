@@ -106,6 +106,12 @@ export class Player {
 
   private _targetYaw = 0;
   private _targetPitch = 0;
+  // sneak: camera height interpolates down for a crouch effect
+  private _eyeHeight = PLAYER_EYE;
+  private _targetEyeHeight = PLAYER_EYE;
+  // FOV kick on sprint
+  fovKick = 0;
+  private _targetFovKick = 0;
 
   toggleFly() {
     this.flying = !this.flying;
@@ -171,8 +177,10 @@ export class Player {
     } else {
       const canSprint =
         this.input.sprint &&
+        !this.input.sneak &&
         (this.gameMode === "creative" || this.hunger > 0);
-      const baseSpeed = canSprint ? SPRINT_SPEED : WALK_SPEED;
+      let baseSpeed = canSprint ? SPRINT_SPEED : WALK_SPEED;
+      if (this.input.sneak) baseSpeed *= 0.45; // crouch is slow
       const speed = this.inWater ? baseSpeed * 0.5 : baseSpeed;
       // horizontal: accelerate toward wish
       const targetVx = wishX * speed;
@@ -273,12 +281,21 @@ export class Player {
       this.health = Math.max(0, this.health - 4);
     }
 
+    // sneak lowers eye height (crouch), smooth interpolation
+    const sneakLerp = 1 - Math.pow(0.001, dt);
+    this._targetEyeHeight = this.input.sneak && !this.flying ? PLAYER_EYE - 0.3 : PLAYER_EYE;
+    this._eyeHeight += (this._targetEyeHeight - this._eyeHeight) * sneakLerp;
+
+    // FOV kick on sprint (smooth)
+    this._targetFovKick = this.input.sprint && (Math.abs(this.vel.x) + Math.abs(this.vel.z)) > 1 ? 6 : 0;
+    this.fovKick += (this._targetFovKick - this.fovKick) * (1 - Math.pow(0.001, dt));
+
     // Update camera
     const bobY = Math.sin(this.bob) * 0.06;
     const bobX = Math.cos(this.bob * 0.5) * 0.04;
     this.camera.position.set(
       this.pos.x + bobX,
-      this.pos.y + PLAYER_EYE + bobY,
+      this.pos.y + this._eyeHeight + bobY,
       this.pos.z
     );
     const q = this._camQuat;

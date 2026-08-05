@@ -402,10 +402,12 @@ function StartScreen({
                 height: `${h}px`,
                 background: `linear-gradient(180deg, ${c1} 0 18%, ${c2} 18% 100%)`,
                 border: `2px solid rgba(0,0,0,0.3)`,
+                animation: `pc-float 2.5s ease-in-out ${i * 0.15}s infinite`,
               }}
             />
           ))}
         </div>
+        <style>{`@keyframes pc-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}`}</style>
 
         <h1
           className="text-5xl font-black tracking-tight text-white sm:text-7xl"
@@ -484,11 +486,12 @@ function StartScreen({
           <Control k="Arrows" v="Look (alt)" />
           <Control k="Space" v="Jump / Swim" />
           <Control k="Shift" v="Sprint" />
-          <Control k="Ctrl" v="Descend (fly)" />
+          <Control k="Ctrl" v="Sneak / Descend" />
           <Control k="F" v="Toggle fly" />
           <Control k="G" v="Creative / Survival" />
           <Control k="R" v="Toggle rain" />
           <Control k="T / N" v="Noon / Night" />
+          <Control k="H" v="Teleport to Lahore" />
           <Control k="Click" v="Break block" />
           <Control k="R-Click" v="Place block" />
           <Control k="1–9 / Wheel" v="Select hotbar" />
@@ -600,10 +603,12 @@ function PauseOverlay({
           <Control k="Drag" v="Look" />
           <Control k="Space" v="Jump" />
           <Control k="Shift" v="Sprint" />
+          <Control k="Ctrl" v="Sneak" />
           <Control k="F" v="Fly" />
           <Control k="G" v="Mode" />
           <Control k="R" v="Rain" />
           <Control k="T/N" v="Time" />
+          <Control k="H" v="Lahore" />
           <Control k="Click" v="Break" />
           <Control k="R-Click" v="Place" />
           <Control k="E" v="Inventory" />
@@ -847,12 +852,25 @@ function Hud({ hud }: { hud: HudState }) {
 
   return (
     <div className="pointer-events-none absolute inset-0 z-10">
-      {/* Crosshair */}
+      {/* Crosshair — dot + ring, scales subtly with break progress */}
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
-        <div className="relative h-5 w-5">
-          <div className="absolute left-1/2 top-0 h-5 w-0.5 -translate-x-1/2 bg-white/80 mix-blend-difference" />
-          <div className="absolute top-1/2 left-0 h-0.5 w-5 -translate-y-1/2 bg-white/80 mix-blend-difference" />
+        <div className="relative h-6 w-6">
+          <div
+            className="absolute left-1/2 top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white mix-blend-difference"
+          />
+          <div
+            className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/60 mix-blend-difference"
+            style={{
+              transform: `translate(-50%, -50%) scale(${1 + hud.breakProgress * 0.8})`,
+              borderColor: hud.breakProgress > 0 ? `rgba(255,${Math.round(255 - hud.breakProgress * 200)},0,0.9)` : undefined,
+            }}
+          />
         </div>
+      </div>
+
+      {/* Selected block name tooltip (above hotbar) */}
+      <div className="absolute bottom-[88px] left-1/2 -translate-x-1/2 rounded-md border border-white/15 bg-black/60 px-3 py-1 font-mono text-[11px] text-amber-200 backdrop-blur">
+        {hud.selectedName}
       </div>
 
       {/* Top-left info panel */}
@@ -873,11 +891,11 @@ function Hud({ hud }: { hud: HudState }) {
           {isDay ? <SunIcon /> : <MoonIcon />}
           <span>{timeStr}</span>
           <span className="text-white/40">·</span>
-          <span className="text-cyan-300">{hud.heading}</span>
+          <span className="text-cyan-300 font-bold">{hud.heading}</span>
           {hud.settings.showFps && (
             <>
               <span className="text-white/40">·</span>
-              <span>{hud.fps} fps</span>
+              <span className={hud.fps >= 50 ? "text-emerald-300" : hud.fps >= 30 ? "text-amber-300" : "text-red-300"}>{hud.fps} fps</span>
             </>
           )}
           {hud.flying && (
@@ -892,10 +910,11 @@ function Hud({ hud }: { hud: HudState }) {
               <span className="text-sky-300">RAIN</span>
             </>
           )}
-          <span className="text-white/40">·</span>
+        </div>
+        <div className="mt-0.5">
           <span
             className={
-              hud.gameMode === "creative" ? "text-emerald-300" : "text-orange-300"
+              hud.gameMode === "creative" ? "text-emerald-300 font-bold" : "text-orange-300 font-bold"
             }
           >
             {hud.gameMode === "creative" ? "CREATIVE" : "SURVIVAL"}
