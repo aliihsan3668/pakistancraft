@@ -1,11 +1,23 @@
-// PakistanCraft — chunk voxel storage + greedy-ish face-culled meshing
+// PakistanCraft — chunk voxel storage + face-culled meshing with ambient occlusion
 import * as THREE from "three";
 import { Block, BLOCKS, isTransparent, isLiquid, tileUV } from "./blocks";
 import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL } from "./constants";
 import { idx } from "./worldgen";
 
-const FACES = [
-  // dir, normal, corner offsets (4 verts), which tile face (0=top,1=side,2=bottom)
+// Each face: normal dir, 4 corners (positions in unit cube), tileFace index,
+// base directional shade, and the two tangent axes (u,v) used for AO sampling.
+interface FaceDef {
+  dir: [number, number, number];
+  normal: [number, number, number];
+  corners: [number, number, number][];
+  tileFace: 0 | 1 | 2;
+  shade: number;
+  tu: [number, number, number];
+  tv: [number, number, number];
+}
+
+const FACES: FaceDef[] = [
+  // +X
   {
     dir: [1, 0, 0],
     normal: [1, 0, 0],
@@ -16,8 +28,11 @@ const FACES = [
       [1, 0, 1],
     ],
     tileFace: 1,
-    shade: 0.6,
+    shade: 0.62,
+    tu: [0, 1, 0],
+    tv: [0, 0, 1],
   },
+  // -X
   {
     dir: [-1, 0, 0],
     normal: [-1, 0, 0],
@@ -28,8 +43,11 @@ const FACES = [
       [0, 0, 0],
     ],
     tileFace: 1,
-    shade: 0.6,
+    shade: 0.62,
+    tu: [0, 1, 0],
+    tv: [0, 0, 1],
   },
+  // +Y (top)
   {
     dir: [0, 1, 0],
     normal: [0, 1, 0],
@@ -41,7 +59,10 @@ const FACES = [
     ],
     tileFace: 0,
     shade: 1.0,
+    tu: [1, 0, 0],
+    tv: [0, 0, 1],
   },
+  // -Y (bottom)
   {
     dir: [0, -1, 0],
     normal: [0, -1, 0],
@@ -53,7 +74,10 @@ const FACES = [
     ],
     tileFace: 2,
     shade: 0.5,
+    tu: [1, 0, 0],
+    tv: [0, 0, 1],
   },
+  // +Z
   {
     dir: [0, 0, 1],
     normal: [0, 0, 1],
@@ -65,7 +89,10 @@ const FACES = [
     ],
     tileFace: 1,
     shade: 0.8,
+    tu: [1, 0, 0],
+    tv: [0, 1, 0],
   },
+  // -Z
   {
     dir: [0, 0, -1],
     normal: [0, 0, -1],
@@ -77,8 +104,10 @@ const FACES = [
     ],
     tileFace: 1,
     shade: 0.8,
+    tu: [1, 0, 0],
+    tv: [0, 1, 0],
   },
-] as const;
+];
 
 function shouldRenderFace(cur: number, nb: number): boolean {
   if (cur === Block.AIR) return false;
@@ -92,6 +121,17 @@ function shouldRenderFace(cur: number, nb: number): boolean {
   if (!nbT) return false; // opaque neighbor hides face
   return true; // air or different transparent
 }
+
+// A block occludes AO if it's opaque (solid, not transparent, not liquid)
+function isOccluder(b: number): boolean {
+  if (b === Block.AIR) return false;
+  const d = BLOCKS[b];
+  if (!d) return false;
+  return !d.transparent && !d.liquid;
+}
+
+// AO brightness lookup: level 0..3 → 0..1 multiplier
+const AO_TABLE = [0.45, 0.62, 0.8, 1.0];
 
 export interface MeshLayer {
   positions: number[];
@@ -136,11 +176,45 @@ export class Chunk {
     this.dirty = true;
   }
 
-  // Build mesh geometry by face culling. getBlock reads world (absolute) coords.
+  // Compute vertex AO level (0..3) for a face corner.
+  private vertexAO(
+    getBlock: (x: number, y: number, z: number) => number,
+    x: number,
+    y: number,
+    z: number,
+    face: FaceDef,
+    su: number,
+    sv: number
+  ): number {
+    // neighbor block in front of the face
+    const fx = x + face.dir[0];
+    const fy = y + face.dir[1];
+    const fz = z + face.dir[2];
+    const tu = face.tu;
+    const tv = face.tv;
+    const s1 = isOccluder(
+      getBlock(fx + tu[0] * su, fy + tu[1] * su, fz + tu[2] * su)
+    );
+    const s2 = isOccluder(
+      getBlock(fx + tv[0] * sv, fy + tv[1] * sv, fz + tv[2] * sv)
+    );
+    if (s1 && s2) return 0;
+    const c = isOccluder(
+      getBlock(
+        fx + tu[0] * su + tv[0] * sv,
+        fy + tu[1] * su + tv[1] * sv,
+        fz + tu[2] * su + tv[2] * sv
+      )
+    );
+    return 3 - (s1 ? 1 : 0) - (s2 ? 1 : 0) - (c ? 1 : 0);
+  }
+
+  // Build mesh geometry by face culling + ambient occlusion.
   buildMesh(
     getBlock: (wx: number, wy: number, wz: number) => number,
     baseX: number,
-    baseZ: number
+    baseZ: number,
+    aoEnabled = true
   ) {
     const solid = newLayer();
     const cutout = newLayer();
@@ -154,7 +228,6 @@ export class Chunk {
           const def = BLOCKS[block];
           if (!def) continue;
 
-          // pick target layer
           let layer: MeshLayer;
           if (def.liquid) layer = water;
           else if (def.transparent) layer = cutout;
@@ -174,54 +247,52 @@ export class Chunk {
             const tile = def.tiles[face.tileFace];
             const uv = tileUV(tile);
             const shade = face.shade;
-            // Slight AO: darken if block below neighbor is solid (simple)
-            let ao = 1;
-            if (face.tileFace === 0) {
-              // top face: brighten near sun? keep flat
-              ao = 1;
+
+            // compute AO for each of the 4 corners
+            const ao: number[] = [];
+            for (let ci = 0; ci < 4; ci++) {
+              const c = face.corners[ci];
+              const dotU = c[0] * face.tu[0] + c[1] * face.tu[1] + c[2] * face.tu[2];
+              const dotV = c[0] * face.tv[0] + c[1] * face.tv[1] + c[2] * face.tv[2];
+              const ssu = dotU > 0 ? 1 : -1;
+              const ssv = dotV > 0 ? 1 : -1;
+              ao.push(
+                aoEnabled ? this.vertexAO(getBlock, wx, y, wz, face, ssu, ssv) : 3
+              );
             }
 
             const start = layer.positions.length / 3;
-            for (const c of face.corners) {
-              layer.positions.push(wx + c[0], y + c[1], wz + c[2]);
-              layer.normals.push(face.normal[0], face.normal[1], face.normal[2]);
-              const cx = c[0];
-              const cz = c[2];
-              // UV mapping per corner (matches winding above)
-              let u: number, v: number;
-              if (f === 0) {
-                // +X: corners (0,0),(0,1),(1,1),(1,0) in (z,y)
-                u = cz;
-                v = c[1];
-              } else if (f === 1) {
-                // -X
-                u = cz;
-                v = c[1];
-              } else if (f === 2) {
-                // +Y top
-                u = cx;
-                v = cz;
-              } else if (f === 3) {
-                // -Y bottom
-                u = cx;
-                v = cz;
-              } else if (f === 4) {
-                // +Z
-                u = cx;
-                v = c[1];
-              } else {
-                // -Z
-                u = cx;
-                v = c[1];
-              }
-              const uu = u === 0 ? uv.u0 : uv.u1;
-              const vv = v === 0 ? uv.v0 : uv.v1;
+            // emit 4 vertices
+            for (let ci = 0; ci < 4; ci++) {
+              const c = face.corners[ci];
+              // water top face: lower by 0.12 for a nicer look
+              const isTop = face.tileFace === 0;
+              const yOff = def.liquid && isTop ? -0.12 : 0;
+              layer.positions.push(wx + c[0], y + c[1] + yOff, wz + c[2]);
+              layer.normals.push(
+                face.normal[0],
+                face.normal[1],
+                face.normal[2]
+              );
+              // UV: project corner onto tu/tv for uv coords
+              const dotU = c[0] * face.tu[0] + c[1] * face.tu[1] + c[2] * face.tu[2];
+              const dotV = c[0] * face.tv[0] + c[1] * face.tv[1] + c[2] * face.tv[2];
+              const uu = dotU > 0 ? uv.u1 : uv.u0;
+              const vv = dotV > 0 ? uv.v1 : uv.v0;
               layer.uvs.push(uu, vv);
-              layer.colors.push(shade * ao, shade * ao, shade * ao);
+              const a = AO_TABLE[ao[ci]];
+              const b = shade * a;
+              layer.colors.push(b, b, b);
             }
-            // two triangles
-            layer.indices.push(start, start + 1, start + 2);
-            layer.indices.push(start, start + 2, start + 3);
+            // flip quad diagonal if it produces smoother AO
+            // (avoid the harsh diagonal through two dark corners)
+            if (ao[0] + ao[2] > ao[1] + ao[3]) {
+              layer.indices.push(start, start + 1, start + 2);
+              layer.indices.push(start, start + 2, start + 3);
+            } else {
+              layer.indices.push(start + 1, start + 2, start + 3);
+              layer.indices.push(start + 1, start + 3, start);
+            }
           }
         }
       }
@@ -252,8 +323,6 @@ export function buildMeshObject(
   return mesh;
 }
 
-// Lower water top faces by 0.1 for a nicer look — handled at mesh time by
-// checking if block is water and face is top. (kept simple here)
 export function isWaterTop(block: number): boolean {
   return isLiquid(block);
 }

@@ -84,3 +84,25 @@ Work Log:
 
 Stage Summary:
 - The game now loads and is fully playable inside the Preview Panel iframe via drag-to-look + click-to-break + right-click-to-place + arrow keys, with no permanent pause overlay and a proper loading/error path.
+
+---
+Task ID: 4
+Agent: main (Z.ai Code)
+Task: Make PakistanCraft "100x better than Minecraft" — add all necessary controls, visuals, and systems.
+
+Work Log:
+- **Ambient Occlusion** (`chunk.ts`): Rewrote chunk meshing to compute per-vertex AO by sampling 3 neighboring occluder blocks (side1, side2, corner) per face corner. AO level 0..3 mapped to brightness [0.45, 0.62, 0.8, 1.0]. Added quad-diagonal flip to avoid harsh AO artifacts. Toggleable via settings (re-meshes all chunks on toggle).
+- **Sky system** (`sky.ts`, new): Gradient sky dome (ShaderMaterial with top/horizon/bottom colors + sun glow), sun disc (CircleGeometry, follows time-of-day arc), moon disc (opposite sun), 1200-star Points field that fades in at night. Sky colors transition smoothly through sunrise/sunset/night with warm sunset tints.
+- **Particle system** (`particles.ts`, new): GPU Points-based block-break particles. Emits 16 textured particles per block break (sample the broken block's texture from the atlas), with gravity, velocity, and fade-out. Custom ShaderMaterial with per-particle size/UV/alpha attributes.
+- **Weather: rain** (`engine.ts`): 4000-point rain system that follows the player, animated falling drops with recycling. Rain dims ambient/hemi/sun lights and darkens sky/fog. Toggles randomly (60-180s cycles) or manually via R key. Weather toggle in settings.
+- **Settings system** (`settings.ts` + `engine.ts`): Full settings store persisted to localStorage. Settings panel (React) with sliders for render distance (2-8), FOV (60-100°), brightness (60-140%), mouse sensitivity (20-200%), and toggles for AO, clouds, stars, weather, show FPS, show coords. Game mode selector (creative/survival). All settings apply live (render distance changes fog + chunk load radius, AO toggle re-meshes, FOV updates camera, etc.).
+- **Survival mechanics** (`player.ts`): Game mode field. In survival: hunger drains over time (faster when sprinting), health regenerates when hunger ≥ 16, starvation damage when hunger = 0, fall damage (computed from fall distance > 3.5 blocks), sprint disabled when hunger = 0. In creative: health/hunger always full. Toggle via G key or settings.
+- **Save/load** (`engine.ts`): `saveState()` serializes player position/yaw/pitch/health/hunger/flying/gameMode + hotbar + selected + timeOfDay + all block edits to localStorage. `loadState()` restores everything and re-applies edited blocks. `Engine.hasSave()` / `Engine.clearSave()` static methods. Start screen shows "Continue Save" button when save exists. Pause menu has Save button.
+- **Compass HUD**: HUD shows heading (N/NE/E/SE/S/SW/W/NW) derived from player yaw. Also shows game mode (CREATIVE/SURVIVAL), weather (RAIN), time, FPS, flying indicator.
+- **New controls**: G = toggle game mode, R = toggle rain, T = set time to noon, N = set time to night, F = fly (creative only), Esc = pause menu with Save/Settings/Quit, Settings panel accessible from start screen and pause menu.
+- **Bug fixes during integration**: Particle ShaderMaterial had `fog: true` without declaring fog uniforms → crashed every frame with "Cannot read properties of undefined (reading 'value')". Fixed by setting `fog: false`. Renamed `uv2` attribute to `aTileUv` to avoid Three.js reserved name conflict. Fixed particle update method referencing old attribute name.
+- **Dynamic render distance**: World.update now uses `this.renderDistance` (settable) instead of constant. Unload distance scales with render distance. Engine passes settings.renderDistance to world.
+- Verified with agent-browser: game loads (no errors), HUD shows biome/coords/time/compass/FPS/mode, G toggles SURVIVAL, R toggles RAIN, Esc opens pause, Settings panel opens with all sliders/toggles, Save works (237 bytes in localStorage), Continue Save loads correctly (restored SURVIVAL mode + saved time). VLM confirmed 3D terrain, trees, structures, HUD elements all rendering.
+
+Stage Summary:
+- PakistanCraft now has: ambient occlusion, gradient sky with sun/moon/stars, block-break particles, dynamic rain weather, full settings panel (render distance/FOV/brightness/sensitivity/AO/clouds/stars/weather/mode), survival mode (hunger/fall damage/regen), save/load to localStorage, compass, and expanded controls (G/R/T/N/F/E/Esc). All verified working in-browser with no errors. Lint clean.

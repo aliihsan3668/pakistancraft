@@ -1,9 +1,18 @@
-// PakistanCraft — main engine: Three.js setup, render loop, input, interaction
+// PakistanCraft — main engine: Three.js setup, render loop, input, interaction,
+// sky, particles, weather, settings, survival, save/load.
 import * as THREE from "three";
 import { World } from "./world";
 import { Player } from "./player";
 import { Block, BLOCKS, buildAtlasTexture } from "./blocks";
 import { getBiome } from "./biomes";
+import { Sky } from "./sky";
+import { ParticleSystem } from "./particles";
+import {
+  DEFAULT_SETTINGS,
+  loadSettings,
+  saveSettings,
+  type Settings,
+} from "./settings";
 import {
   CHUNK_SIZE,
   RENDER_DISTANCE,
@@ -32,6 +41,13 @@ export interface HudState {
   selectedSlot: number;
   hotbar: number[];
   onGround: boolean;
+  yaw: number;
+  heading: string; // N / NE / E / ...
+  weather: "clear" | "rain";
+  gameMode: "creative" | "survival";
+  brightness: number;
+  settings: Settings;
+  raining: boolean;
 }
 
 export interface EngineCallbacks {
@@ -42,6 +58,7 @@ export interface EngineCallbacks {
 
 export interface EngineOptions extends EngineCallbacks {
   seed: number;
+  settings?: Settings;
 }
 
 // Default hotbar: a curated Pakistani palette
@@ -100,6 +117,18 @@ export const CREATIVE_PALETTE: number[] = [
   Block.COTTON_CROP,
 ];
 
+const SAVE_KEY = "pakistancraft.save";
+
+function headingFromYaw(yaw: number): string {
+  // yaw=0 → looking -Z (north). Normalize to 0..2π.
+  let a = (-yaw) % (Math.PI * 2);
+  if (a < 0) a += Math.PI * 2;
+  const deg = (a / (Math.PI * 2)) * 360;
+  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+  const idx = Math.round(deg / 45) % 8;
+  return dirs[idx];
+}
+
 export class Engine {
   canvas: HTMLCanvasElement;
   renderer: THREE.WebGLRenderer;
@@ -108,11 +137,16 @@ export class Engine {
   world: World;
   player: Player;
   callbacks: EngineCallbacks;
+  settings: Settings;
 
   sun: THREE.DirectionalLight;
   hemi: THREE.HemisphereLight;
   ambient: THREE.AmbientLight;
   clouds: THREE.Mesh | null = null;
+  sky: Sky;
+  particles: ParticleSystem;
+  rain: THREE.Points | null = null;
+  rainVel: Float32Array | null = null;
 
   timeOfDay = 0.3; // start at morning
   running = false;
@@ -127,7 +161,7 @@ export class Engine {
 
   pointerLocked = false;
   inputEnabled = true;
-  // drag-to-look fallback (used when pointer lock is unavailable, e.g. iframes)
+  // drag-to-look fallback
   private dragLook = false;
   private dragLastX = 0;
   private dragLastY = 0;
@@ -139,6 +173,13 @@ export class Engine {
   private mouseButtons = new Set<number>();
   private breakCooldown = 0;
   private placeCooldown = 0;
+
+  // weather
+  private weatherTimer = 60; // seconds until next weather change
+  raining = false;
+
+  // edits tracking for save
+  private edits = new Map<string, number>();
 
   private materials: {
     solid: THREE.Material;
@@ -161,6 +202,7 @@ export class Engine {
   constructor(canvas: HTMLCanvasElement, opts: EngineOptions) {
     this.canvas = canvas;
     this.callbacks = opts;
+    this.settings = opts.settings ?? loadSettings();
     this.hotbar = [...DEFAULT_HOTBAR];
 
     try {
@@ -181,10 +223,14 @@ export class Engine {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color("#87b6e8");
-    this.scene.fog = new THREE.Fog("#bcd8ee", CHUNK_SIZE * 2, CHUNK_SIZE * (RENDER_DISTANCE - 0.5));
+    this.scene.fog = new THREE.Fog(
+      "#bcd8ee",
+      CHUNK_SIZE * 2,
+      CHUNK_SIZE * (this.settings.renderDistance - 0.5)
+    );
 
     this.camera = new THREE.PerspectiveCamera(
-      72,
+      this.settings.fov,
       window.innerWidth / window.innerHeight,
       0.05,
       1000
@@ -208,17 +254,19 @@ export class Engine {
         map: atlas,
         vertexColors: true,
         transparent: true,
-        opacity: 0.72,
+        opacity: 0.78,
         depthWrite: false,
         side: THREE.DoubleSide,
       }),
     };
 
     this.world = new World(this.scene, this.materials, opts.seed);
+    this.world.ao = this.settings.ao;
+    this.world.renderDistance = this.settings.renderDistance;
 
     // Placeholder player; real spawn position is computed in initSpawn()
-    // (called by start()) so the loading screen can paint first.
     this.player = new Player(this.world, this.camera, 8.5, 50, 8.5);
+    this.player.gameMode = this.settings.gameMode;
 
     // Lights
     this.ambient = new THREE.AmbientLight(0xffffff, 0.35);
@@ -231,6 +279,9 @@ export class Engine {
     this.scene.add(this.sun.target);
 
     this.makeClouds();
+    this.sky = new Sky(this.scene);
+    this.particles = new ParticleSystem(this.scene);
+    this.makeRain();
 
     // bind handlers
     this._onKeyDown = (e) => this.onKeyDown(e);
@@ -286,7 +337,6 @@ export class Engine {
   }
 
   private initSpawn() {
-    // Generate the 3x3 chunk area around spawn so spawnY + collisions work.
     for (let dx = -1; dx <= 1; dx++)
       for (let dz = -1; dz <= 1; dz++) this.world.ensureTerrain(dx, dz);
     for (let dx = -1; dx <= 1; dx++)
@@ -297,19 +347,56 @@ export class Engine {
   }
 
   requestPointerLock() {
-    // Best-effort: in sandboxed iframes pointer lock may be blocked.
     try {
       const r = this.canvas.requestPointerLock() as unknown as
         | Promise<void>
         | undefined;
       if (r && typeof r.then === "function") {
-        r.catch(() => {
-          /* pointer lock unavailable — drag-to-look fallback stays active */
-        });
+        r.catch(() => {});
       }
     } catch {
       /* ignore */
     }
+  }
+
+  // ---- settings ----
+  setSettings(partial: Partial<Settings>) {
+    this.settings = { ...this.settings, ...partial };
+    saveSettings(this.settings);
+    // apply live
+    if (partial.fov !== undefined) {
+      this.camera.fov = this.settings.fov;
+      this.camera.updateProjectionMatrix();
+    }
+    if (partial.renderDistance !== undefined) {
+      const f = this.scene.fog as THREE.Fog;
+      f.far = CHUNK_SIZE * (this.settings.renderDistance - 0.5);
+      this.world.setRenderDistance(this.settings.renderDistance);
+    }
+    if (partial.ao !== undefined) {
+      this.world.setAo(this.settings.ao);
+    }
+    if (partial.renderClouds !== undefined && this.clouds) {
+      this.clouds.visible = this.settings.renderClouds;
+    }
+    if (partial.renderStars !== undefined) {
+      this.sky.stars.visible = this.settings.renderStars;
+    }
+    if (partial.gameMode !== undefined) {
+      this.player.gameMode = this.settings.gameMode;
+      if (this.settings.gameMode === "creative") {
+        this.player.flying = false; // let user toggle fly manually
+      }
+    }
+  }
+
+  setGameMode(mode: "creative" | "survival") {
+    this.setSettings({ gameMode: mode });
+    this.player.gameMode = mode;
+  }
+
+  setTimeOfDay(t: number) {
+    this.timeOfDay = ((t % 1) + 1) % 1;
   }
 
   teleportTo(x: number, z: number) {
@@ -331,7 +418,8 @@ export class Engine {
   }
 
   setSelected(i: number) {
-    this.selected = ((i % this.hotbar.length) + this.hotbar.length) % this.hotbar.length;
+    this.selected =
+      ((i % this.hotbar.length) + this.hotbar.length) % this.hotbar.length;
   }
 
   setHotbarSlot(slot: number, blockId: number) {
@@ -343,24 +431,122 @@ export class Engine {
     return this.hotbar[this.selected];
   }
 
+  // ---- save / load ----
+  static hasSave(): boolean {
+    try {
+      return !!localStorage.getItem(SAVE_KEY);
+    } catch {
+      return false;
+    }
+  }
+
+  saveState(seed: number) {
+    try {
+      const editsArr: [number, number, number, number][] = [];
+      for (const [k, v] of this.edits) {
+        const [x, y, z] = k.split(",").map(Number);
+        editsArr.push([x, y, z, v]);
+      }
+      const data = {
+        seed,
+        time: this.timeOfDay,
+        player: {
+          x: this.player.pos.x,
+          y: this.player.pos.y,
+          z: this.player.pos.z,
+          yaw: this.player.yaw,
+          pitch: this.player.pitch,
+          health: this.player.health,
+          hunger: this.player.hunger,
+          flying: this.player.flying,
+          gameMode: this.player.gameMode,
+        },
+        hotbar: this.hotbar,
+        selected: this.selected,
+        edits: editsArr,
+      };
+      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  loadState(): { seed: number } | null {
+    try {
+      const raw = localStorage.getItem(SAVE_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      // restore edits
+      if (Array.isArray(data.edits)) {
+        for (const [x, y, z, b] of data.edits) {
+          this.world.setBlock(x, y, z, b);
+          this.edits.set(`${x},${y},${z}`, b);
+        }
+      }
+      // restore player
+      const p = data.player;
+      if (p) {
+        this.player.pos.set(p.x, p.y, p.z);
+        this.player.vel.set(0, 0, 0);
+        this.player.yaw = p.yaw ?? 0;
+        this.player.pitch = p.pitch ?? 0;
+        this.player.health = p.health ?? 20;
+        this.player.hunger = p.hunger ?? 20;
+        this.player.flying = p.flying ?? false;
+        this.player.gameMode = p.gameMode ?? "creative";
+      }
+      if (Array.isArray(data.hotbar)) this.hotbar = data.hotbar;
+      if (typeof data.selected === "number") this.selected = data.selected;
+      if (typeof data.time === "number") this.timeOfDay = data.time;
+      return { seed: data.seed };
+    } catch {
+      return null;
+    }
+  }
+
+  static clearSave() {
+    try {
+      localStorage.removeItem(SAVE_KEY);
+    } catch {
+      /* ignore */
+    }
+  }
+
   // ---- input handlers ----
   private onKeyDown(e: KeyboardEvent) {
     const code = e.code;
     this.keys.add(code);
-    // hotbar number keys
     if (code.startsWith("Digit")) {
       const n = parseInt(code.slice(5), 10);
-      if (n >= 1 && n <= 9) {
-        this.setSelected(n - 1);
-      }
+      if (n >= 1 && n <= 9) this.setSelected(n - 1);
     }
     if (code === "KeyF") {
-      this.player.toggleFly();
+      // fly toggle — creative only
+      if (this.player.gameMode === "creative") this.player.toggleFly();
+    }
+    if (code === "KeyG") {
+      // toggle game mode
+      this.setGameMode(
+        this.player.gameMode === "creative" ? "survival" : "creative"
+      );
+    }
+    if (code === "KeyR") {
+      // rain toggle (debug / fun)
+      this.raining = !this.raining;
+      this.weatherTimer = 120;
+    }
+    if (code === "KeyT") {
+      // set time to noon
+      this.setTimeOfDay(0.5);
+    }
+    if (code === "KeyN") {
+      // set time to night
+      this.setTimeOfDay(0.0);
     }
     if (code === "Escape") {
       if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     }
-    // prevent page scroll on space / arrows
     if (code === "Space" || code.startsWith("Arrow")) e.preventDefault();
   }
 
@@ -379,15 +565,16 @@ export class Engine {
     i.left = this.keys.has("KeyA");
     i.right = this.keys.has("KeyD");
     i.jump = this.keys.has("Space");
-    i.sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
-    i.sneak = this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+    i.sprint =
+      this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    i.sneak =
+      this.keys.has("ControlLeft") || this.keys.has("ControlRight");
   }
 
   private onMouseDown(e: MouseEvent) {
     this.mouseButtons.add(e.button);
     if (!this.inputEnabled) return;
     if (this.pointerLocked) {
-      // Pointer-lock mode: immediate break / place
       if (e.button === 0) {
         this.tryBreak();
         this.breakCooldown = 0.25;
@@ -396,7 +583,6 @@ export class Engine {
         this.placeCooldown = 0.25;
       }
     } else {
-      // Drag-to-look mode (iframe / no pointer lock)
       if (e.button === 0) {
         this.dragLook = true;
         this.dragLastX = e.clientX;
@@ -420,7 +606,6 @@ export class Engine {
     }
     if (!this.pointerLocked && e.button === 0 && this.dragLook) {
       const dt = performance.now() - this.clickStartT;
-      // A quick click without much movement → break the targeted block
       if (this.clickMoved < 6 && dt < 300) {
         this.tryBreak();
         this.breakCooldown = 0.25;
@@ -431,15 +616,16 @@ export class Engine {
 
   private onMouseMove(e: MouseEvent) {
     if (!this.inputEnabled) return;
+    const sens = 0.0022 * this.settings.mouseSensitivity;
     if (this.pointerLocked) {
-      this.player.setLookFromDelta(e.movementX, e.movementY);
+      this.player.setLookFromDelta(e.movementX, e.movementY, sens);
     } else if (this.dragLook && this.mouseButtons.has(0)) {
       const dx = e.clientX - this.dragLastX;
       const dy = e.clientY - this.dragLastY;
       this.dragLastX = e.clientX;
       this.dragLastY = e.clientY;
       this.clickMoved += Math.abs(dx) + Math.abs(dy);
-      this.player.setLookFromDelta(dx, dy, 0.005);
+      this.player.setLookFromDelta(dx, dy, 0.005 * this.settings.mouseSensitivity);
     }
   }
 
@@ -468,7 +654,8 @@ export class Engine {
     const b = this.world.getBlock(hit.x, hit.y, hit.z);
     if (b === Block.BEDROCK) return;
     this.world.setBlock(hit.x, hit.y, hit.z, Block.AIR);
-    // remesh this chunk + neighbors if on border
+    this.edits.set(`${hit.x},${hit.y},${hit.z}`, Block.AIR);
+    this.particles.emitBlockBreak(hit.x, hit.y, hit.z, b, 16);
     this.world.remeshAround(hit.x, hit.z);
     if (hit.nx !== 0) this.world.remeshAround(hit.x + hit.nx, hit.z);
     if (hit.nz !== 0) this.world.remeshAround(hit.x, hit.z + hit.nz);
@@ -480,7 +667,6 @@ export class Engine {
     const px = hit.x + hit.nx;
     const py = hit.y + hit.ny;
     const pz = hit.z + hit.nz;
-    // don't place inside the player
     const playerMinX = this.player.pos.x - 0.3;
     const playerMaxX = this.player.pos.x + 0.3;
     const playerMinY = this.player.pos.y;
@@ -495,13 +681,15 @@ export class Engine {
       pz + 1 > playerMinZ &&
       pz < playerMaxZ
     ) {
-      // would intersect player
       const def = BLOCKS[this.getSelectedBlock()];
       if (def && def.solid) return;
     }
     const existing = this.world.getBlock(px, py, pz);
     if (existing !== Block.AIR && !BLOCKS[existing]?.liquid) return;
-    this.world.setBlock(px, py, pz, this.getSelectedBlock());
+    const placed = this.getSelectedBlock();
+    this.world.setBlock(px, py, pz, placed);
+    this.edits.set(`${px},${py},${pz}`, placed);
+    this.particles.emitBlockBreak(px, py, pz, placed, 6);
     this.world.remeshAround(px, pz);
     if (hit.nx !== 0) this.world.remeshAround(px + hit.nx, pz);
     if (hit.nz !== 0) this.world.remeshAround(px, pz + hit.nz);
@@ -515,7 +703,6 @@ export class Engine {
     canvas.height = size;
     const ctx = canvas.getContext("2d")!;
     ctx.clearRect(0, 0, size, size);
-    // procedural cloud blobs
     for (let i = 0; i < 60; i++) {
       const x = Math.random() * size;
       const y = Math.random() * size;
@@ -543,59 +730,140 @@ export class Engine {
     this.clouds = new THREE.Mesh(geo, mat);
     this.clouds.rotation.x = -Math.PI / 2;
     this.clouds.position.y = 90;
+    this.clouds.visible = this.settings.renderClouds;
     this.scene.add(this.clouds);
   }
 
-  // ---- day/night ----
+  // ---- rain ----
+  private makeRain() {
+    const count = 4000;
+    const positions = new Float32Array(count * 3);
+    const vel = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      positions[i * 3] = (Math.random() - 0.5) * 60;
+      positions[i * 3 + 1] = Math.random() * 40;
+      positions[i * 3 + 2] = (Math.random() - 0.5) * 60;
+      vel[i * 3] = 0;
+      vel[i * 3 + 1] = -20 - Math.random() * 10;
+      vel[i * 3 + 2] = -2;
+    }
+    this.rainVel = vel;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({
+      color: 0xaac4dd,
+      size: 0.12,
+      transparent: true,
+      opacity: 0.5,
+      depthWrite: false,
+      fog: true,
+    });
+    this.rain = new THREE.Points(geo, mat);
+    this.rain.visible = false;
+    this.rain.frustumCulled = false;
+    this.scene.add(this.rain);
+  }
+
+  private updateRain(dt: number) {
+    if (!this.rain || !this.rainVel) return;
+    this.rain.visible = this.raining;
+    if (!this.raining) return;
+    this.rain.position.set(
+      this.player.pos.x,
+      this.player.pos.y,
+      this.player.pos.z
+    );
+    const posAttr = this.rain.geometry.getAttribute(
+      "position"
+    ) as THREE.BufferAttribute;
+    const arr = posAttr.array as Float32Array;
+    for (let i = 0; i < arr.length; i += 3) {
+      arr[i] += this.rainVel[i] * dt;
+      arr[i + 1] += this.rainVel[i + 1] * dt;
+      arr[i + 2] += this.rainVel[i + 2] * dt;
+      if (arr[i + 1] < -20) {
+        arr[i] = (Math.random() - 0.5) * 60;
+        arr[i + 1] = 30 + Math.random() * 10;
+        arr[i + 2] = (Math.random() - 0.5) * 60;
+      }
+    }
+    posAttr.needsUpdate = true;
+  }
+
+  private updateWeather(dt: number) {
+    if (!this.settings.weather) {
+      this.raining = false;
+      return;
+    }
+    this.weatherTimer -= dt;
+    if (this.weatherTimer <= 0) {
+      this.raining = !this.raining;
+      this.weatherTimer = this.raining ? 60 + Math.random() * 60 : 120 + Math.random() * 180;
+    }
+  }
+
+  // ---- day/night + sky ----
   private updateSky(dt: number) {
     this.timeOfDay += dt / DAY_LENGTH;
     if (this.timeOfDay >= 1) this.timeOfDay -= 1;
-    const t = this.timeOfDay;
-    // sun angle: t=0.25 sunrise (east), 0.5 noon (top), 0.75 sunset (west)
-    const ang = (t - 0.25) * Math.PI * 2;
+
+    this.sky.update(
+      this.timeOfDay,
+      this.player.pos.x,
+      this.player.pos.y,
+      this.player.pos.z
+    );
+
+    const ang = (this.timeOfDay - 0.25) * Math.PI * 2;
     const sunY = Math.sin(ang);
     const sunX = Math.cos(ang);
-    this.sun.position.set(sunX * 120, sunY * 120 + 10, 40);
-    this.sun.target.position.set(this.player.pos.x, this.player.pos.y, this.player.pos.z);
+    this.sun.position.set(
+      this.player.pos.x + sunX * 120,
+      this.player.pos.y + sunY * 120 + 10,
+      this.player.pos.z + 40
+    );
+    this.sun.target.position.copy(this.player.pos);
 
-    // intensity
     const dayFactor = Math.max(0, sunY);
-    this.sun.intensity = 0.2 + dayFactor * 1.0;
-    this.ambient.intensity = 0.18 + dayFactor * 0.3;
-    this.hemi.intensity = 0.25 + dayFactor * 0.45;
+    let sunI = 0.2 + dayFactor * 1.0;
+    let ambI = 0.18 + dayFactor * 0.3;
+    let hemiI = 0.25 + dayFactor * 0.45;
 
-    // sun color: warm at sunrise/sunset
+    // weather dimming
+    if (this.raining) {
+      sunI *= 0.45;
+      ambI *= 0.7;
+      hemiI *= 0.6;
+    }
+
     const warmth = Math.max(0, 1 - Math.abs(sunY) * 2.2);
     const sunColor = new THREE.Color().lerpColors(
       new THREE.Color("#fff2d8"),
       new THREE.Color("#ff9a3a"),
       warmth
     );
+    if (this.raining) sunColor.multiplyScalar(0.7);
     this.sun.color.copy(sunColor);
+    this.sun.intensity = sunI * this.settings.brightness;
+    this.ambient.intensity = ambI * this.settings.brightness;
+    this.hemi.intensity = hemiI * this.settings.brightness;
 
-    // sky color
-    const night = new THREE.Color("#0a1430");
-    const day = new THREE.Color("#87b6e8");
-    const sunset = new THREE.Color("#e89a5a");
-    let sky: THREE.Color;
-    if (sunY > 0.15) {
-      sky = day.clone();
-    } else if (sunY > -0.15) {
-      // sunrise/sunset blend
-      const k = (sunY + 0.15) / 0.3;
-      sky = night.clone().lerp(day, k).lerp(sunset, (1 - Math.abs(sunY) / 0.15) * 0.6);
-    } else {
-      sky = night.clone();
+    // background + fog follow sky horizon color
+    (this.scene.background as THREE.Color).copy(this.sky.skyColor);
+    (this.scene.fog as THREE.Fog).color.copy(this.sky.fogColor);
+    if (this.raining) {
+      (this.scene.background as THREE.Color).multiplyScalar(0.6);
+      (this.scene.fog as THREE.Fog).color.multiplyScalar(0.7);
     }
-    (this.scene.background as THREE.Color).copy(sky);
-    (this.scene.fog as THREE.Fog).color.copy(sky);
 
-    // clouds follow player and drift
+    // clouds follow player
     if (this.clouds) {
       this.clouds.position.x = this.player.pos.x;
       this.clouds.position.z = this.player.pos.z;
-      (this.clouds.material as THREE.MeshBasicMaterial).opacity =
-        0.3 + dayFactor * 0.4;
+      const cm = this.clouds.material as THREE.MeshBasicMaterial;
+      let cloudOp = 0.3 + dayFactor * 0.4;
+      if (this.raining) cloudOp = 0.7;
+      cm.opacity = cloudOp;
     }
   }
 
@@ -618,21 +886,28 @@ export class Engine {
     // input
     this.updateInputState();
 
-    // arrow-key look (fallback when mouse look is restricted)
+    // arrow-key look
     if (this.inputEnabled) {
       const lr = 1.4 * dt;
-      if (this.keys.has("ArrowLeft")) this.player.setLookFromDelta(-lr, 0, 1);
-      if (this.keys.has("ArrowRight")) this.player.setLookFromDelta(lr, 0, 1);
-      if (this.keys.has("ArrowUp")) this.player.setLookFromDelta(0, -lr, 1);
-      if (this.keys.has("ArrowDown")) this.player.setLookFromDelta(0, lr, 1);
+      if (this.keys.has("ArrowLeft"))
+        this.player.setLookFromDelta(-lr, 0, 1);
+      if (this.keys.has("ArrowRight"))
+        this.player.setLookFromDelta(lr, 0, 1);
+      if (this.keys.has("ArrowUp"))
+        this.player.setLookFromDelta(0, -lr, 1);
+      if (this.keys.has("ArrowDown"))
+        this.player.setLookFromDelta(0, lr, 1);
     }
 
-    // continuous break/place while holding (creative style)
+    // continuous break/place
     if (this.inputEnabled) {
       this.breakCooldown -= dt;
       this.placeCooldown -= dt;
-      // continuous break only in pointer-lock mode (drag mode breaks on click)
-      if (this.pointerLocked && this.mouseButtons.has(0) && this.breakCooldown <= 0) {
+      if (
+        this.pointerLocked &&
+        this.mouseButtons.has(0) &&
+        this.breakCooldown <= 0
+      ) {
         this.tryBreak();
         this.breakCooldown = 0.22;
       }
@@ -642,14 +917,18 @@ export class Engine {
       }
     }
 
-    // player physics
+    // player physics + survival
     this.player.update(dt);
 
-    // world streaming
-    this.world.update(this.player.pos.x, this.player.pos.z, 3);
+    // world streaming (budget scales modestly with render distance)
+    const budget = Math.max(2, Math.floor(this.settings.renderDistance / 2));
+    this.world.update(this.player.pos.x, this.player.pos.z, budget);
 
-    // sky
+    // weather + sky + particles
+    this.updateWeather(dt);
+    this.updateRain(dt);
     this.updateSky(dt);
+    this.particles.update(dt);
 
     // render
     this.renderer.render(this.scene, this.camera);
@@ -689,8 +968,15 @@ export class Engine {
       selectedSlot: this.selected,
       hotbar: [...this.hotbar],
       onGround: this.player.onGround,
+      yaw: this.player.yaw,
+      heading: headingFromYaw(this.player.yaw),
+      weather: this.raining ? "rain" : "clear",
+      gameMode: this.player.gameMode,
+      brightness: this.settings.brightness,
+      settings: { ...this.settings },
+      raining: this.raining,
     });
   }
 }
 
-export { PLAYER_EYE, SEA_LEVEL };
+export { PLAYER_EYE, SEA_LEVEL, DEFAULT_SETTINGS };

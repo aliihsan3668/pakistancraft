@@ -50,6 +50,11 @@ export class Player {
   hunger = 20;
   maxHunger = 20;
   bob = 0;
+  gameMode: "creative" | "survival" = "creative";
+  private fallStart = 0; // y where the fall began
+  private wasOnGround = true;
+  private hungerTimer = 0;
+  private regenTimer = 0;
 
   constructor(world: World, camera: THREE.PerspectiveCamera, x: number, y: number, z: number) {
     this.world = world;
@@ -150,7 +155,10 @@ export class Player {
       if (this.input.sneak) vy -= 1;
       this.vel.y = vy * speed;
     } else {
-      const baseSpeed = this.input.sprint ? SPRINT_SPEED : WALK_SPEED;
+      const canSprint =
+        this.input.sprint &&
+        (this.gameMode === "creative" || this.hunger > 0);
+      const baseSpeed = canSprint ? SPRINT_SPEED : WALK_SPEED;
       const speed = this.inWater ? baseSpeed * 0.5 : baseSpeed;
       // horizontal: accelerate toward wish
       const targetVx = wishX * speed;
@@ -182,11 +190,66 @@ export class Player {
     this.onGround = false;
     this.moveAxis("y", this.vel.y * dt);
 
+    // track fall distance for fall damage (survival only)
+    if (this.gameMode === "survival") {
+      if (this.onGround) {
+        if (!this.wasOnGround) {
+          // just landed
+          const fallDist = this.fallStart - this.pos.y;
+          if (fallDist > 3.5) {
+            const dmg = Math.floor((fallDist - 3) * 1.2);
+            this.health = Math.max(0, this.health - dmg);
+          }
+          this.fallStart = this.pos.y;
+        }
+      } else {
+        // falling — update fall start only if moving down past a threshold
+        if (this.vel.y < -2) {
+          if (this.fallStart < this.pos.y + 1) this.fallStart = this.pos.y;
+        }
+      }
+      this.wasOnGround = this.onGround;
+    }
+
     // bob
     if (this.onGround && (Math.abs(this.vel.x) + Math.abs(this.vel.z)) > 0.5) {
       this.bob += dt * (this.input.sprint ? 12 : 8);
     } else {
       this.bob *= 0.9;
+    }
+
+    // ---- survival stats ----
+    if (this.gameMode === "survival") {
+      // hunger drains over time; faster when sprinting
+      this.hungerTimer += dt;
+      const drain = (this.input.sprint ? 0.25 : 0.08) * dt;
+      if (this.hungerTimer > 1) {
+        this.hunger = Math.max(0, this.hunger - drain);
+        this.hungerTimer = 0;
+      }
+      // regen health when hunger is high enough
+      if (this.hunger >= 16 && this.health < this.maxHealth) {
+        this.regenTimer += dt;
+        if (this.regenTimer > 3) {
+          this.health = Math.min(this.maxHealth, this.health + 1);
+          this.hunger = Math.max(0, this.hunger - 0.5);
+          this.regenTimer = 0;
+        }
+      } else {
+        this.regenTimer = 0;
+      }
+      // starvation
+      if (this.hunger <= 0) {
+        this.regenTimer += dt;
+        if (this.regenTimer > 4) {
+          this.health = Math.max(0, this.health - 1);
+          this.regenTimer = 0;
+        }
+      }
+    } else {
+      // creative: full health, no hunger drain
+      this.health = this.maxHealth;
+      this.hunger = this.maxHunger;
     }
 
     // fall damage / void

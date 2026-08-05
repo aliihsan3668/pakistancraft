@@ -28,11 +28,23 @@ export class World {
   chunks = new Map<string, Chunk>();
   // queue of chunks needing mesh rebuild
   remeshQueue: string[] = [];
+  ao = true; // ambient occlusion toggle (re-meshes chunks when changed)
+  renderDistance = RENDER_DISTANCE;
 
   constructor(scene: THREE.Scene, materials: ChunkMaterials, seed: number) {
     this.scene = scene;
     this.materials = materials;
     this.gen = new WorldGen(seed);
+  }
+
+  setAo(v: boolean) {
+    if (this.ao === v) return;
+    this.ao = v;
+    for (const c of this.chunks.values()) c.dirty = true;
+  }
+
+  setRenderDistance(v: number) {
+    this.renderDistance = v;
   }
 
   getChunk(cx: number, cz: number): Chunk | undefined {
@@ -147,19 +159,16 @@ export class World {
   update(px: number, pz: number, budget = 2): number {
     const pcx = Math.floor(px / CHUNK_SIZE);
     const pcz = Math.floor(pz / CHUNK_SIZE);
+    const rd = this.renderDistance;
 
     // Determine load order: spiral from center
     const toLoad: Array<{ cx: number; cz: number; dist: number }> = [];
-    for (let dx = -RENDER_DISTANCE; dx <= RENDER_DISTANCE; dx++) {
-      for (let dz = -RENDER_DISTANCE; dz <= RENDER_DISTANCE; dz++) {
+    for (let dx = -rd; dx <= rd; dx++) {
+      for (let dz = -rd; dz <= rd; dz++) {
         const d = dx * dx + dz * dz;
-        if (d > RENDER_DISTANCE * RENDER_DISTANCE) continue;
+        if (d > rd * rd) continue;
         const cx = pcx + dx;
         const cz = pcz + dz;
-        const c = this.getChunk(cx, cz);
-        if (!c || !c.generated || (!c.decorated && c.dirty === false)) {
-          // need generation
-        }
         toLoad.push({ cx, cz, dist: d });
       }
     }
@@ -202,10 +211,11 @@ export class World {
 
     // Unload distant chunks
     const unload: string[] = [];
+    const unloadDist = rd + 2;
     for (const [k, c] of this.chunks) {
       const dx = c.cx - pcx;
       const dz = c.cz - pcz;
-      if (Math.abs(dx) > UNLOAD_DISTANCE || Math.abs(dz) > UNLOAD_DISTANCE) {
+      if (Math.abs(dx) > unloadDist || Math.abs(dz) > unloadDist) {
         unload.push(k);
       }
     }
@@ -224,7 +234,8 @@ export class World {
     const layers = c.buildMesh(
       (wx, wy, wz) => this.getBlock(wx, wy, wz),
       baseX,
-      baseZ
+      baseZ,
+      this.ao
     );
     // dispose old
     this.disposeChunkMeshes(c);
