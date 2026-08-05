@@ -65,7 +65,7 @@ export class Player {
 
   // Find a safe spawn Y at given x,z (top of terrain, skipping trees/decoration)
   static spawnY(world: World, x: number, z: number): number {
-    const nonSurface = new Set([
+    const nonSurface = new Set<number>([
       Block.LOG_NEEM,
       Block.LOG_PALM,
       Block.LEAVES,
