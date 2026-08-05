@@ -45,6 +45,16 @@ export const Block = {
   MOSQUE_DOME: 38, // green/white dome
   RICE_CROP: 39,
   COTTON_CROP: 40,
+  RED_SANDSTONE: 41, // Badshahi Mosque red sandstone
+  WHITE_DOME: 42, // white marble dome
+  TILE_BLUE: 43, // Wazir Khan style blue tile
+  AWNING_RED: 44, // food street awning
+  AWNING_GREEN: 45,
+  AWNING_YELLOW: 46,
+  METAL_RAIL: 47, // orange line metro rail
+  HEDGE: 48, // garden hedge
+  FOUNTAIN: 49, // decorative fountain
+  LANTERN: 50, // hanging lantern (light)
 } as const;
 
 export type BlockId = number;
@@ -98,7 +108,18 @@ export const Tile = {
   MOSQUE_DOME: 44,
   RICE: 45,
   COTTON: 46,
-  COUNT: 47,
+  RED_SANDSTONE: 47,
+  RED_SANDSTONE_TOP: 48,
+  WHITE_DOME: 49,
+  TILE_BLUE: 50,
+  AWNING_RED: 51,
+  AWNING_GREEN: 52,
+  AWNING_YELLOW: 53,
+  METAL_RAIL: 54,
+  HEDGE: 55,
+  FOUNTAIN: 56,
+  LANTERN: 57,
+  COUNT: 58,
 };
 
 export interface BlockDef {
@@ -271,6 +292,46 @@ export const BLOCKS: Record<number, BlockDef> = {
     solid: false,
     color: "#e8e8d8",
   }),
+  [Block.RED_SANDSTONE]: def(
+    Block.RED_SANDSTONE,
+    "Badshahi Red Sandstone",
+    [Tile.RED_SANDSTONE_TOP, Tile.RED_SANDSTONE, Tile.RED_SANDSTONE_TOP],
+    { color: "#9a4a2a" }
+  ),
+  [Block.WHITE_DOME]: def(Block.WHITE_DOME, "White Marble Dome", Tile.WHITE_DOME, {
+    color: "#f0eee8",
+  }),
+  [Block.TILE_BLUE]: def(Block.TILE_BLUE, "Kashmiri Blue Tile", Tile.TILE_BLUE, {
+    color: "#2a5a8a",
+  }),
+  [Block.AWNING_RED]: def(Block.AWNING_RED, "Red Awning", Tile.AWNING_RED, {
+    color: "#c8312a",
+  }),
+  [Block.AWNING_GREEN]: def(Block.AWNING_GREEN, "Green Awning", Tile.AWNING_GREEN, {
+    color: "#2a8a4a",
+  }),
+  [Block.AWNING_YELLOW]: def(
+    Block.AWNING_YELLOW,
+    "Yellow Awning",
+    Tile.AWNING_YELLOW,
+    { color: "#e8b830" }
+  ),
+  [Block.METAL_RAIL]: def(Block.METAL_RAIL, "Metro Rail", Tile.METAL_RAIL, {
+    color: "#a8a8b0",
+  }),
+  [Block.HEDGE]: def(Block.HEDGE, "Garden Hedge", Tile.HEDGE, {
+    transparent: true,
+    color: "#2f5a2a",
+  }),
+  [Block.FOUNTAIN]: def(Block.FOUNTAIN, "Fountain Stone", Tile.FOUNTAIN, {
+    color: "#b8c8d8",
+  }),
+  [Block.LANTERN]: def(Block.LANTERN, "Hanging Lantern", Tile.LANTERN, {
+    transparent: true,
+    solid: false,
+    light: 15,
+    color: "#ffb838",
+  }),
 };
 
 export function isSolid(id: BlockId): boolean {
@@ -343,6 +404,24 @@ function noisy(
       px(ctx, x0 + x, y0 + y, `#${f(br)}${f(bg)}${f(bb)}`);
     }
   }
+}
+
+function drawAwning(
+  ctx: CanvasRenderingContext2D,
+  x0: number,
+  y0: number,
+  color: string,
+  dark: string,
+  seed: number
+) {
+  noisy(ctx, x0, y0, color, 0.05, seed);
+  // scalloped stripes
+  ctx.fillStyle = dark;
+  for (let x = 0; x < 16; x += 4) {
+    ctx.fillRect(x0 + x, y0, 2, 16);
+  }
+  ctx.fillStyle = "rgba(0,0,0,0.2)";
+  ctx.fillRect(x0, y0 + 14, 16, 2);
 }
 
 export function drawTile(ctx: CanvasRenderingContext2D, tile: number, x0: number, y0: number) {
@@ -756,6 +835,114 @@ export function drawTile(ctx: CanvasRenderingContext2D, tile: number, x0: number
       ctx.fillRect(x0 + 5, y0 + 4, 2, 2);
       ctx.fillRect(x0 + 9, y0 + 4, 2, 2);
       ctx.fillRect(x0 + 7, y0 + 2, 2, 2);
+      break;
+    }
+    case Tile.RED_SANDSTONE: {
+      noisy(ctx, x0, y0, "#9a4a2a", 0.06, 411);
+      ctx.strokeStyle = "#6a2a18";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x0, y0 + 5);
+      ctx.lineTo(x0 + 16, y0 + 5);
+      ctx.moveTo(x0, y0 + 10);
+      ctx.lineTo(x0 + 16, y0 + 10);
+      ctx.stroke();
+      // brick verticals offset
+      ctx.beginPath();
+      ctx.moveTo(x0 + 4, y0);
+      ctx.lineTo(x0 + 4, y0 + 5);
+      ctx.moveTo(x0 + 11, y0 + 5);
+      ctx.lineTo(x0 + 11, y0 + 10);
+      ctx.moveTo(x0 + 7, y0 + 10);
+      ctx.lineTo(x0 + 7, y0 + 16);
+      ctx.stroke();
+      break;
+    }
+    case Tile.RED_SANDSTONE_TOP: {
+      noisy(ctx, x0, y0, "#a85638", 0.04, 412);
+      ctx.strokeStyle = "#7a3a22";
+      ctx.strokeRect(x0 + 0.5, y0 + 0.5, 15, 15);
+      break;
+    }
+    case Tile.WHITE_DOME: {
+      noisy(ctx, x0, y0, "#f0eee8", 0.02, 421);
+      // subtle ribs
+      ctx.strokeStyle = "rgba(180,178,170,0.5)";
+      ctx.lineWidth = 1;
+      for (let x = 2; x < 16; x += 4) {
+        ctx.beginPath();
+        ctx.moveTo(x0 + x, y0);
+        ctx.lineTo(x0 + x, y0 + 16);
+        ctx.stroke();
+      }
+      break;
+    }
+    case Tile.TILE_BLUE: {
+      noisy(ctx, x0, y0, "#2a5a8a", 0.05, 431);
+      // geometric star pattern
+      ctx.strokeStyle = "#f0e8c0";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x0 + 8, y0 + 2);
+      ctx.lineTo(x0 + 14, y0 + 8);
+      ctx.lineTo(x0 + 8, y0 + 14);
+      ctx.lineTo(x0 + 2, y0 + 8);
+      ctx.closePath();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x0 + 8, y0 + 5);
+      ctx.lineTo(x0 + 11, y0 + 8);
+      ctx.lineTo(x0 + 8, y0 + 11);
+      ctx.lineTo(x0 + 5, y0 + 8);
+      ctx.closePath();
+      ctx.stroke();
+      break;
+    }
+    case Tile.AWNING_RED:
+      drawAwning(ctx, x0, y0, "#c8312a", "#8a1a14", 441);
+      break;
+    case Tile.AWNING_GREEN:
+      drawAwning(ctx, x0, y0, "#2a8a4a", "#1a5a2a", 451);
+      break;
+    case Tile.AWNING_YELLOW:
+      drawAwning(ctx, x0, y0, "#e8b830", "#b8881a", 461);
+      break;
+    case Tile.METAL_RAIL: {
+      noisy(ctx, x0, y0, "#a8a8b0", 0.03, 471);
+      ctx.fillStyle = "#d8d8e0";
+      ctx.fillRect(x0 + 1, y0 + 2, 2, 12);
+      ctx.fillRect(x0 + 13, y0 + 2, 2, 12);
+      ctx.fillRect(x0 + 1, y0 + 6, 14, 1);
+      ctx.fillRect(x0 + 1, y0 + 10, 14, 1);
+      break;
+    }
+    case Tile.HEDGE: {
+      noisy(ctx, x0, y0, "#2f5a2a", 0.1, 481);
+      for (let i = 0; i < 18; i++) {
+        const r = rng(i + 490);
+        px(ctx, x0 + Math.floor(r() * 16), y0 + Math.floor(r() * 16), "#1f3a18");
+      }
+      break;
+    }
+    case Tile.FOUNTAIN: {
+      noisy(ctx, x0, y0, "#b8c8d8", 0.04, 491);
+      ctx.strokeStyle = "#88a0b8";
+      ctx.strokeRect(x0 + 2.5, y0 + 2.5, 11, 11);
+      ctx.fillStyle = "#3a78c8";
+      ctx.fillRect(x0 + 5, y0 + 5, 6, 6);
+      break;
+    }
+    case Tile.LANTERN: {
+      ctx.clearRect(x0, y0, 16, 16);
+      ctx.fillStyle = "#5a4020";
+      ctx.fillRect(x0 + 6, y0 + 1, 4, 2);
+      ctx.fillStyle = "#ffb838";
+      ctx.fillRect(x0 + 5, y0 + 3, 6, 8);
+      ctx.fillStyle = "#ffe08a";
+      ctx.fillRect(x0 + 6, y0 + 4, 4, 1);
+      ctx.fillStyle = "#5a4020";
+      ctx.fillRect(x0 + 5, y0 + 11, 6, 1);
+      ctx.fillRect(x0 + 7, y0 + 12, 2, 3);
       break;
     }
     default:

@@ -48,6 +48,9 @@ export interface HudState {
   brightness: number;
   settings: Settings;
   raining: boolean;
+  targetBlock: { x: number; y: number; z: number } | null;
+  breakProgress: number;
+  biomeId: number;
 }
 
 export interface EngineCallbacks {
@@ -115,9 +118,81 @@ export const CREATIVE_PALETTE: number[] = [
   Block.MOSQUE_DOME,
   Block.RICE_CROP,
   Block.COTTON_CROP,
+  Block.RED_SANDSTONE,
+  Block.WHITE_DOME,
+  Block.TILE_BLUE,
+  Block.AWNING_RED,
+  Block.AWNING_GREEN,
+  Block.AWNING_YELLOW,
+  Block.METAL_RAIL,
+  Block.HEDGE,
+  Block.FOUNTAIN,
+  Block.LANTERN,
 ];
 
 const SAVE_KEY = "pakistancraft.save";
+
+// Custom water shader: animated vertex waves + flowing texture, respects
+// vertex color (AO/directional shade) and fog.
+function makeWaterMaterial(atlas: THREE.Texture): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    fog: false, // we handle fog manually in the shader
+    uniforms: {
+      uAtlas: { value: atlas },
+      uTime: { value: 0 },
+      uFogColor: { value: new THREE.Color("#bcd8ee") },
+      uFogNear: { value: 32 },
+      uFogFar: { value: 72 },
+      uOpacity: { value: 0.78 },
+    },
+    vertexShader: /* glsl */ `
+      attribute vec3 color;
+      varying vec2 vUv;
+      varying vec3 vColor;
+      varying float vFogDepth;
+      uniform float uTime;
+      void main() {
+        vUv = uv;
+        vColor = color;
+        vec3 pos = position;
+        // wave displacement on top faces (normal.y > 0.5)
+        if (normal.y > 0.5) {
+          float w = sin(pos.x * 0.8 + uTime * 1.5) * 0.04
+                  + cos(pos.z * 0.6 + uTime * 1.2) * 0.04;
+          pos.y += w;
+        }
+        vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+        vFogDepth = -mv.z;
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform sampler2D uAtlas;
+      uniform float uTime;
+      uniform vec3 uFogColor;
+      uniform float uFogNear;
+      uniform float uFogFar;
+      uniform float uOpacity;
+      varying vec2 vUv;
+      varying vec3 vColor;
+      varying float vFogDepth;
+      void main() {
+        // scroll UVs slightly for a flowing feel
+        vec2 uv = vUv + vec2(uTime * 0.01, uTime * 0.015);
+        vec4 tex = texture2D(uAtlas, uv);
+        vec3 col = tex.rgb * vColor;
+        // fog
+        float fogFactor = smoothstep(uFogNear, uFogFar, vFogDepth);
+        col = mix(col, uFogColor, fogFactor);
+        gl_FragColor = vec4(col, uOpacity * (1.0 - fogFactor * 0.3));
+      }
+    `,
+    vertexColors: true,
+  });
+}
 
 function headingFromYaw(yaw: number): string {
   // yaw=0 → looking -Z (north). Normalize to 0..2π.
@@ -147,6 +222,7 @@ export class Engine {
   particles: ParticleSystem;
   rain: THREE.Points | null = null;
   rainVel: Float32Array | null = null;
+  selectionBox: THREE.LineSegments | null = null;
 
   timeOfDay = 0.3; // start at morning
   running = false;
@@ -173,6 +249,22 @@ export class Engine {
   private mouseButtons = new Set<number>();
   private breakCooldown = 0;
   private placeCooldown = 0;
+
+  // touch input (written by React layer via setTouchInput)
+  touchInput = {
+    moveX: 0, // -1..1
+    moveY: 0, // -1..1
+    lookDX: 0, // pixels delta this frame
+    lookDY: 0,
+    jump: false,
+    sprint: false,
+    sneak: false,
+    breakBtn: false,
+    placeBtn: false,
+  };
+  // targeted block for crack overlay
+  targetBlock: { x: number; y: number; z: number } | null = null;
+  breakProgress = 0; // 0..1
 
   // weather
   private weatherTimer = 60; // seconds until next weather change
@@ -250,14 +342,7 @@ export class Engine {
         alphaTest: 0.4,
         side: THREE.DoubleSide,
       }),
-      water: new THREE.MeshLambertMaterial({
-        map: atlas,
-        vertexColors: true,
-        transparent: true,
-        opacity: 0.78,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
+      water: makeWaterMaterial(atlas),
     };
 
     this.world = new World(this.scene, this.materials, opts.seed);
@@ -282,6 +367,7 @@ export class Engine {
     this.sky = new Sky(this.scene);
     this.particles = new ParticleSystem(this.scene);
     this.makeRain();
+    this.makeSelectionBox();
 
     // bind handlers
     this._onKeyDown = (e) => this.onKeyDown(e);
@@ -318,6 +404,10 @@ export class Engine {
     this.lastTime = performance.now();
     this._raf = requestAnimationFrame(this.loop);
     this.callbacks.onReady?.();
+    // Expose for debugging (dev only)
+    if (typeof window !== "undefined") {
+      (window as unknown as { __engine?: Engine }).__engine = this;
+    }
   }
 
   dispose() {
@@ -337,13 +427,17 @@ export class Engine {
   }
 
   private initSpawn() {
-    for (let dx = -1; dx <= 1; dx++)
-      for (let dz = -1; dz <= 1; dz++) this.world.ensureTerrain(dx, dz);
-    for (let dx = -1; dx <= 1; dx++)
-      for (let dz = -1; dz <= 1; dz++) this.world.ensureDecorated(dx, dz);
-    const spawnY = Player.spawnY(this.world, 8, 8);
-    this.player.pos.set(8.5, spawnY + 0.5, 8.5);
+    for (let dx = -2; dx <= 2; dx++)
+      for (let dz = -2; dz <= 2; dz++) this.world.ensureTerrain(dx, dz);
+    for (let dx = -2; dx <= 2; dx++)
+      for (let dz = -2; dz <= 2; dz++) this.world.ensureDecorated(dx, dz);
+    // Spawn the player at the Lahore city center (open courtyard area).
+    const spawnX = 40;
+    const spawnZ = 40;
+    const spawnY = Player.spawnY(this.world, spawnX, spawnZ);
+    this.player.pos.set(spawnX + 0.5, spawnY + 0.5, spawnZ + 0.5);
     this.player.vel.set(0, 0, 0);
+    this.player.yaw = 0.7; // face toward the mosque entrance
   }
 
   requestPointerLock() {
@@ -429,6 +523,11 @@ export class Engine {
 
   getSelectedBlock(): number {
     return this.hotbar[this.selected];
+  }
+
+  // React touch layer writes touch deltas/state here.
+  setTouchInput(partial: Partial<typeof this.touchInput>) {
+    Object.assign(this.touchInput, partial);
   }
 
   // ---- save / load ----
@@ -560,15 +659,27 @@ export class Engine {
       i.forward = i.back = i.left = i.right = i.jump = i.sprint = i.sneak = false;
       return;
     }
+    // keyboard
     i.forward = this.keys.has("KeyW");
     i.back = this.keys.has("KeyS");
     i.left = this.keys.has("KeyA");
     i.right = this.keys.has("KeyD");
     i.jump = this.keys.has("Space");
-    i.sprint =
-      this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
-    i.sneak =
-      this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+    i.sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+    i.sneak = this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+    // touch joystick merge (analog: treat >0.3 as pressed)
+    const t = this.touchInput;
+    if (Math.abs(t.moveY) > 0.15) {
+      if (t.moveY > 0) i.forward = true;
+      else i.back = true;
+    }
+    if (Math.abs(t.moveX) > 0.15) {
+      if (t.moveX > 0) i.right = true;
+      else i.left = true;
+    }
+    if (t.jump) i.jump = true;
+    if (t.sprint) i.sprint = true;
+    if (t.sneak) i.sneak = true;
   }
 
   private onMouseDown(e: MouseEvent) {
@@ -764,6 +875,38 @@ export class Engine {
     this.scene.add(this.rain);
   }
 
+  // ---- selection box (block highlight + break progress) ----
+  private makeSelectionBox() {
+    // wireframe box slightly larger than a block
+    const geo = new THREE.BoxGeometry(1.005, 1.005, 1.005);
+    const edges = new THREE.EdgesGeometry(geo);
+    const mat = new THREE.LineBasicMaterial({
+      color: 0x000000,
+      transparent: true,
+      opacity: 0.4,
+      depthTest: true,
+    });
+    this.selectionBox = new THREE.LineSegments(edges, mat);
+    this.selectionBox.visible = false;
+    this.scene.add(this.selectionBox);
+  }
+
+  private updateSelectionBox() {
+    if (!this.selectionBox) return;
+    const hit = this.player.raycast(REACH_DISTANCE);
+    if (hit) {
+      this.selectionBox.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
+      this.selectionBox.visible = true;
+      // color shifts from black → red as break progress increases
+      const mat = this.selectionBox.material as THREE.LineBasicMaterial;
+      const p = this.breakProgress;
+      mat.color.setRGB(p, 0, 0);
+      mat.opacity = 0.4 + p * 0.4;
+    } else {
+      this.selectionBox.visible = false;
+    }
+  }
+
   private updateRain(dt: number) {
     if (!this.rain || !this.rainVel) return;
     this.rain.visible = this.raining;
@@ -865,6 +1008,13 @@ export class Engine {
       if (this.raining) cloudOp = 0.7;
       cm.opacity = cloudOp;
     }
+
+    // water shader uniforms
+    const wmat = this.materials.water as THREE.ShaderMaterial;
+    wmat.uniforms.uTime.value += dt;
+    wmat.uniforms.uFogColor.value.copy(this.sky.fogColor);
+    wmat.uniforms.uFogNear.value = CHUNK_SIZE * 2;
+    wmat.uniforms.uFogFar.value = CHUNK_SIZE * (this.settings.renderDistance - 0.5);
   }
 
   // ---- main loop ----
@@ -886,7 +1036,7 @@ export class Engine {
     // input
     this.updateInputState();
 
-    // arrow-key look
+    // look: touch + arrow keys + mouse (mouse handled in onMouseMove)
     if (this.inputEnabled) {
       const lr = 1.4 * dt;
       if (this.keys.has("ArrowLeft"))
@@ -897,9 +1047,19 @@ export class Engine {
         this.player.setLookFromDelta(0, -lr, 1);
       if (this.keys.has("ArrowDown"))
         this.player.setLookFromDelta(0, lr, 1);
+      // touch look
+      if (this.touchInput.lookDX !== 0 || this.touchInput.lookDY !== 0) {
+        this.player.setLookFromDelta(
+          this.touchInput.lookDX,
+          this.touchInput.lookDY,
+          0.004 * this.settings.mouseSensitivity
+        );
+        this.touchInput.lookDX = 0;
+        this.touchInput.lookDY = 0;
+      }
     }
 
-    // continuous break/place
+    // continuous break/place (mouse + touch buttons)
     if (this.inputEnabled) {
       this.breakCooldown -= dt;
       this.placeCooldown -= dt;
@@ -915,6 +1075,40 @@ export class Engine {
         this.tryPlace();
         this.placeCooldown = 0.22;
       }
+      // touch break button
+      if (this.touchInput.breakBtn && this.breakCooldown <= 0) {
+        this.tryBreak();
+        this.breakCooldown = 0.22;
+      }
+      // touch place button
+      if (this.touchInput.placeBtn && this.placeCooldown <= 0) {
+        this.tryPlace();
+        this.placeCooldown = 0.22;
+      }
+    }
+
+    // block-break progress tracking (for crack overlay)
+    if (this.inputEnabled && this.pointerLocked && this.mouseButtons.has(0)) {
+      const hit = this.player.raycast(REACH_DISTANCE);
+      if (hit) {
+        if (
+          this.targetBlock &&
+          this.targetBlock.x === hit.x &&
+          this.targetBlock.y === hit.y &&
+          this.targetBlock.z === hit.z
+        ) {
+          this.breakProgress = Math.min(1, this.breakProgress + dt * 2);
+        } else {
+          this.targetBlock = { x: hit.x, y: hit.y, z: hit.z };
+          this.breakProgress = 0;
+        }
+      } else {
+        this.targetBlock = null;
+        this.breakProgress = 0;
+      }
+    } else {
+      this.targetBlock = null;
+      this.breakProgress = 0;
     }
 
     // player physics + survival
@@ -929,6 +1123,7 @@ export class Engine {
     this.updateRain(dt);
     this.updateSky(dt);
     this.particles.update(dt);
+    this.updateSelectionBox();
 
     // render
     this.renderer.render(this.scene, this.camera);
@@ -975,6 +1170,9 @@ export class Engine {
       brightness: this.settings.brightness,
       settings: { ...this.settings },
       raining: this.raining,
+      targetBlock: this.targetBlock,
+      breakProgress: this.breakProgress,
+      biomeId: biomeId,
     });
   }
 }

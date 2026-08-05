@@ -21,6 +21,8 @@ import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { HeartIcon, FoodIcon, SunIcon, MoonIcon } from "./icons";
+import { TouchControls, useIsTouchDevice } from "./TouchControls";
+import { Minimap } from "./Minimap";
 
 type Phase = "start" | "playing";
 
@@ -50,6 +52,7 @@ export default function PakistanCraft() {
     typeof window !== "undefined" ? loadSettings() : DEFAULT_SETTINGS
   );
   const [toast, setToast] = useState<string | null>(null);
+  const isTouch = useIsTouchDevice();
 
   // refresh save flag when returning to start screen
   useEffect(() => {
@@ -278,6 +281,24 @@ export default function PakistanCraft() {
       {phase === "playing" && hud && (
         <>
           <Hud hud={hud} />
+          <Minimap hud={hud} />
+          {isTouch && !paused && !showSettings && !showInventory && (
+            <TouchControls
+              onMove={(x, y) => engineRef.current?.setTouchInput({ moveX: x, moveY: y })}
+              onLook={(dx, dy) => engineRef.current?.setTouchInput({ lookDX: dx, lookDY: dy })}
+              onJump={(d) => engineRef.current?.setTouchInput({ jump: d })}
+              onSprint={(d) => engineRef.current?.setTouchInput({ sprint: d })}
+              onSneak={(d) => engineRef.current?.setTouchInput({ sneak: d })}
+              onBreak={(d) => engineRef.current?.setTouchInput({ breakBtn: d })}
+              onPlace={(d) => engineRef.current?.setTouchInput({ placeBtn: d })}
+              onFly={() => {
+                const eng = engineRef.current;
+                if (!eng) return;
+                if (eng.player.gameMode !== "creative") eng.setGameMode("creative");
+                eng.player.toggleFly();
+              }}
+            />
+          )}
           {paused && !showSettings && (
             <PauseOverlay
               onResume={resume}

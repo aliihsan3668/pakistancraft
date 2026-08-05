@@ -3,6 +3,14 @@ import { Noise } from "./noise";
 import { Block, isSolid } from "./blocks";
 import { Biome, BiomeId, getBiome } from "./biomes";
 import { CHUNK_SIZE, WORLD_HEIGHT, SEA_LEVEL, mulberry32 } from "./constants";
+import {
+  placeLahoreCity,
+  placeBadshahiMosque,
+  placeMinarEPakistan,
+  placeShalimarGardens,
+  placeWalledCityGate,
+  placeFoodStreet,
+} from "./landmarks";
 
 // Determine biome from elevation/temperature/humidity
 export function pickBiome(
@@ -260,6 +268,65 @@ export class WorldGen {
       const vx = baseX + 2 + Math.floor(villageR() * (CHUNK_SIZE - 6));
       const vz = baseZ + 2 + Math.floor(villageR() * (CHUNK_SIZE - 6));
       this.placeVillage(vx, vz, setBlock, getBlock);
+    }
+
+    // Lahore: place the full city at spawn (chunk 0,0), scatter landmarks elsewhere.
+    // We use a deterministic landmark-per-region approach: each 6x6 chunk region
+    // (96x96 blocks) gets one Lahore landmark at a fixed offset.
+    const regionSize = 6;
+    const rx = Math.floor(cx / regionSize);
+    const rz = Math.floor(cz / regionSize);
+    const isRegionOrigin = cx === rx * regionSize && cz === rz * regionSize;
+    if (isRegionOrigin) {
+      // Spawn region (0,0): full Lahore city, centered so the player spawns
+      // in an open field just south of the Badshahi Mosque.
+      if (rx === 0 && rz === 0) {
+        this.placeLahoreCityAt(40, 40, setBlock, getBlock);
+      } else {
+        // Other regions: one random Lahore landmark
+        const lr = mulberry32(this.seed ^ ((rx * 2246822519) ^ (rz * 3266489917)));
+        const lx = baseX + 4 + Math.floor(lr() * (CHUNK_SIZE * regionSize - 40));
+        const lz = baseZ + 4 + Math.floor(lr() * (CHUNK_SIZE * regionSize - 40));
+        this.placeRandomLandmark(lx, lz, lr, setBlock, getBlock);
+      }
+    }
+  }
+
+  private placeLahoreCityAt(
+    cx: number,
+    cz: number,
+    set: (x: number, y: number, z: number, b: number) => void,
+    get: (x: number, y: number, z: number) => number
+  ) {
+    const col = (x: number, z: number) => this.column(x, z).height;
+    placeLahoreCity(cx, cz, set, get, col, this.seed);
+  }
+
+  private placeRandomLandmark(
+    wx: number,
+    wz: number,
+    r: () => number,
+    set: (x: number, y: number, z: number, b: number) => void,
+    get: (x: number, y: number, z: number) => number
+  ) {
+    const col = (x: number, z: number) => this.column(x, z).height;
+    const pick = Math.floor(r() * 5);
+    switch (pick) {
+      case 0:
+        placeBadshahiMosque(wx, wz, set, get, col);
+        break;
+      case 1:
+        placeMinarEPakistan(wx, wz, set, get, col);
+        break;
+      case 2:
+        placeShalimarGardens(wx, wz, set, get, col);
+        break;
+      case 3:
+        placeWalledCityGate(wx, wz, set, get, col, r);
+        break;
+      case 4:
+        placeFoodStreet(wx, wz, set, get, col, r);
+        break;
     }
   }
 
