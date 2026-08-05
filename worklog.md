@@ -134,3 +134,29 @@ Work Log:
 
 Stage Summary:
 - PakistanCraft now spawns the player in Lahore with Badshahi Mosque, Minar-e-Pakistan, Shalimar Gardens, Walled City gate, Food Street, Orange Line metro, and residential houses all within walking distance. Touch controls, animated water, block selection box, and minimap added. Live at pakistancraft.vercel.app.
+
+---
+Task ID: 6
+Agent: main (Z.ai Code)
+Task: Review and refine — make it smoother, optimized, better than Minecraft, fix favicon.
+
+Work Log:
+- **Performance audit** (subagent): identified ~700-1000 per-frame object allocations across sky, player, particles, chunk meshing, and world streaming — the main cause of GC jank. Also found incomplete resource disposal (memory leak on every reload) and redundant raycasts.
+- **Sky optimization** (`sky.ts`): Hoisted all 12+ `new THREE.Color()` constants to class fields (C_NIGHT, C_DAY, C_DAY_TOP, C_SUNSET, etc.). Replaced `.clone().lerp()` with reusable `_top/_horizon/_bottom/_sunGlow` temporaries using `.copy()/.lerp()`. Eliminated ~12-16 Color allocations/frame.
+- **Player optimization** (`player.ts`): Cached `_camQuat`, `_camEuler`, `_rayOrigin`, `_rayDir` as class fields. Inlined `distToBoundary` closure in raycast. Inlined `isLiquid` check as `b !== Block.WATER && b !== Block.ICE`. Eliminated ~5 allocations/frame + 2-3 allocations/raycast.
+- **Engine optimization** (`engine.ts`): Combined `updateSelectionBox` + break-progress raycast into ONE `_frameRaycast` per frame (was 2-3 DDAs/frame). Cached `C_SUN_WARM`, `C_SUN_SUNSET`, `_sunColor` for the sun color lerp. Eliminated 3 Color allocations/frame.
+- **Particle optimization** (`particles.ts`): Cached `uMid`/`vMid` on each particle at emit time (was calling `tileUV()` 600×/frame). Replaced `shift()` and `splice()` with swap-and-pop (O(n) total vs O(n²)). Set proper `drawRange(0, alive)` so GPU skips dead vertices. Skip GPU upload when no particles alive. Added `dispose()`.
+- **Chunk meshing optimization** (`chunk.ts`): Replaced per-face `const ao: number[] = []` + `.push()` with named locals `ao0-ao3` (eliminated ~2000 array allocations/chunk build). Inlined `idx()` function call in the 16×16×64 hot loop. Hoisted `isTop`/`yOff`/`tu`/`tv` out of the corner loop.
+- **World streaming optimization** (`world.ts`): Cached the spiral `toLoad` list and only rebuild when the player crosses a chunk boundary (was allocating + sorting an 80-entry array every frame). Replaced `Math.floor(wx/CHUNK_SIZE)` with `wx >> 4` and `wx & 15` (bitwise ops, CHUNK_SIZE=16 is power of 2) in `getBlock`/`setBlock`/`getBiomeAt`. Added `dispose()`.
+- **Engine.dispose()** (`engine.ts`): Now properly disposes world chunks, sky, particles, clouds, rain, selection box, and all 3 materials — fixes the GPU memory leak on every engine teardown/reload.
+- **Mouse smoothing** (`player.ts`): Added `_targetYaw`/`_targetPitch` with frame-rate-independent lerp (`1 - pow(0.001, dt)`) toward the actual yaw/pitch. Camera now glides smoothly instead of snapping.
+- **Real biome minimap** (`Minimap.tsx`): Rewrote to sample real biome data via `engine.getBiomeAt(wx, wz)` for each cell (was painting the player's current biome everywhere). Only redraws when player moves ≥1 block or rotates ≥5° (was redrawing 6.7×/sec even when standing still). Added N marker with dark background.
+- **PakistanCraft favicon** (`public/favicon.svg`, new): Custom SVG with Pakistan-flag green gradient background, isometric voxel cube (grass top + dirt sides), gold accent dot, and a small white crescent. Proper 64×64 viewBox.
+- **PWA manifest** (`public/manifest.json`, new): name, short_name, theme_color (#01411C), standalone display, favicon.svg icon.
+- **Metadata** (`layout.tsx`): Updated icons to `/favicon.svg` (was pointing to z.ai CDN logo), added manifest link, updated description to mention Lahore landmarks.
+- **Elevated Lahore spawn**: Player now spawns at Y+8.5 in creative fly mode facing the Badshahi Mosque, so landmarks are immediately visible on spawn.
+- Verified: favicon.svg serves 200, manifest.json serves 200, HTML head has correct icon links, game loads with 0 errors, HUD shows biome/coords/compass/FPS/mode, minimap renders with real biomes, VLM confirmed Lahore landmarks visible from spawn.
+- Pushed to GitHub, deployed to Vercel (pakistancraft.vercel.app).
+
+Stage Summary:
+- Eliminated ~700-1000 per-frame object allocations (sky 12-16/frame, player 5/frame, particles 600/frame, chunk 2000/build), combined 2-3 raycasts into 1/frame, cached world spiral list, bitwise block access, proper resource disposal (no more GPU leaks), smoothed camera, real biome minimap, custom PakistanCraft favicon + PWA manifest. Live at pakistancraft.vercel.app.
