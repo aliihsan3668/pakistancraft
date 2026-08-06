@@ -222,3 +222,20 @@ Work Log:
 
 Stage Summary:
 - Dynamic joystick (appears on touch), tap-to-break + double-tap-to-place gestures, larger action buttons, mobile-responsive HUD (smaller panels, hidden minimap/hints on mobile), auto mobile render distance + pixel ratio reduction, viewport meta (no zoom), higher touch sensitivity. Live at pakistancraft.vercel.app.
+
+---
+Task ID: 10
+Agent: main (Z.ai Code)
+Task: Fix everything for touch, make it work on phones/iPads.
+
+Work Log:
+- **One-shot tap break/place** (`engine.ts` + `TouchControls.tsx`): The old touch flow used `breakBtn`/`placeBtn` booleans with the continuous-break path (0.22s cooldown), which meant tap gestures were too short to register. Added public `breakBlock()` and `placeBlock()` methods that call `tryBreak`/`tryPlace` directly for immediate one-shot actions. The LookPad's single-tap now calls `breakBlock()` directly (instant), double-tap calls `placeBlock()` directly.
+- **Proper continuous break button** (`TouchControls.tsx`): The held ⛏ button uses `onDown`/`onUp` to set `breakBtn` true/false, which feeds the continuous break loop in the engine (breaks a block every 0.22s while held). This gives both instant tap-break and held continuous-break.
+- **Touch hotbar** (`TouchControls.tsx`): Added a `TouchHotbar` component at the bottom center with 9 tappable slots. Tap any slot to select it. The desktop hotbar is hidden on touch devices (`!isTouch && <Hotbar>`).
+- **Mobile inventory** (`PakistanCraft.tsx`): Changed inventory grid from 6 columns to 5 columns on mobile (8 on desktop), with `active:scale-95` feedback and `rounded-lg` for bigger touch targets. Made items scrollable.
+- **Multi-touch zones** (`TouchControls.tsx`): Joystick zone (left 45%) and look pad zone (right 55%) are completely separate divs with independent pointer capture, so you can move and look simultaneously. Each tracks its own `touchId` to ignore other pointers.
+- Verified on iPhone 14 viewport (390×844): `breakBlock()` and `placeBlock()` APIs exist, touch input (joystick + look) works (player moved from 40,40,40 to 41.7,40.5,31.5), `breakBlock()` executes, 0 errors.
+- Pushed to GitHub, deployed to Vercel.
+
+Stage Summary:
+- Fixed touch break/place (one-shot tap via direct API, continuous via held button), added touch hotbar (tap to select), mobile-friendly inventory (5 cols, bigger targets), proper multi-touch zones (joystick + look simultaneous). Live at pakistancraft.vercel.app.
