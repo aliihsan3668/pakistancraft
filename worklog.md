@@ -182,3 +182,23 @@ Work Log:
 
 Stage Summary:
 - Sneak crouch, sprint FOV kick, dot+ring crosshair with break-progress color, block name tooltip, FPS color coding, water specular shimmer, animated logo, H teleport to Lahore. Live at pakistancraft.vercel.app.
+
+---
+Task ID: 8
+Agent: main (Z.ai Code)
+Task: Add TNT + optimize everything + make smooth.
+
+Work Log:
+- **TNT block** (`blocks.ts`): New TNT block (ID 51) with custom side texture (red with "TNT" text band) and top texture (red with fuse dot). Added to creative palette.
+- **Explosion system** (`explosions.ts`, new): `ExplosionSystem` class manages TNT fuses (3s), explosions (radius 4 sphere with randomized edges for natural craters), chain reactions (nearby TNT ignites instead of being destroyed), particle bursts (40 particles at center + 4 per destroyed block), and a screen flash timer (0.35s).
+- **TNT mechanics** (`engine.ts`): Right-clicking on a placed TNT block ignites it (starts fuse). After 3 seconds it explodes, destroying blocks in a 4-block radius, spawning particles, and chain-igniting any nearby TNT. TNT added to creative inventory palette.
+- **Raycast fix** (`player.ts`): The raycast was using `camera.position` and `camera.getWorldDirection()` which are stale when called outside the render loop (e.g. from `tryPlace` triggered by a click event). Rewrote to compute origin/direction directly from `pos` + `_eyeHeight` + `yaw`/`pitch`. This fixes block placement/breaking when the camera matrix hasn't updated yet.
+- **Chunk gen jank reduction** (`world.ts`): Replaced the budget-based streaming with a strict per-frame cap: max 1 terrain generation, 1 decoration, 2 remeshes per frame. Previously could do `budget+3` (up to 5) operations per frame, causing hitches when approaching Lahore or new chunks. Also reduced neighbor terrain ensure from 3×3 (9 chunks) to 4-direct-neighbors (4 chunks) in the remesh phase.
+- **Collision optimization** (`player.ts`): Replaced `Math.floor()` with bitwise `| 0` in `moveAxis` (6 floors → 6 bitwise ORs) and the water-check getBlock. Faster for positive coordinates.
+- **Underwater overlay** (`PakistanCraft.tsx` + `engine.ts`): Added `inWater` to HUD state. When the player's eyes are submerged, a blue gradient overlay tints the screen. The engine already had `inWater` on the player; now it's emitted to the HUD.
+- **Explosion flash overlay** (`PakistanCraft.tsx` + `engine.ts`): Added `flashTimer` to HUD state. On explosion, an orange screen flash fades over 0.35s for visceral feedback.
+- Verified TNT end-to-end: place TNT (slot 0, right-click) → ignite (right-click on TNT) → pending=1 (fuse running) → flash=0.35 at detonation → pending=0 (exploded). Chain reactions work. 0 JS errors.
+- Pushed to GitHub, deployed to Vercel.
+
+Stage Summary:
+- TNT with 3s fuse, 4-block-radius explosions, chain reactions, particle bursts, screen flash. Chunk gen capped at 1/frame for smoothness. Raycast fixed to use player state directly. Underwater overlay added. Live at pakistancraft.vercel.app.
