@@ -532,15 +532,16 @@ export class Engine {
     const spawnX = 40;
     const spawnZ = 40;
     const groundY = Player.spawnY(this.world, spawnX, spawnZ);
-    this.player.pos.set(spawnX + 0.5, groundY + 8.5, spawnZ + 0.5);
+    // Spawn on the ground (not flying) to avoid constant chunk streaming.
+    this.player.pos.set(spawnX + 0.5, groundY + 0.5, spawnZ + 0.5);
     this.player.vel.set(0, 0, 0);
     this.player.yaw = 0.7; // face toward the mosque entrance
-    this.player.pitch = -0.15;
+    this.player.pitch = -0.1;
     (this.player as unknown as { _targetYaw: number })._targetYaw = 0.7;
-    (this.player as unknown as { _targetPitch: number })._targetPitch = -0.15;
-    // start in creative fly so the player doesn't fall
+    (this.player as unknown as { _targetPitch: number })._targetPitch = -0.1;
+    // creative mode but not flying — press F to fly
     this.player.gameMode = "creative";
-    this.player.flying = true;
+    this.player.flying = false;
   }
 
   requestPointerLock() {
@@ -1159,8 +1160,11 @@ export class Engine {
   private loop = (now: number) => {
     if (!this.running) return;
     this._raf = requestAnimationFrame(this.loop);
-    const dt = Math.min(0.05, (now - this.lastTime) / 1000);
+    // Cap dt at 33ms (30fps min) to prevent physics explosions on frame spikes.
+    // If the frame took longer, we run multiple sub-steps for stable physics.
+    const rawDt = (now - this.lastTime) / 1000;
     this.lastTime = now;
+    const dt = Math.min(0.033, rawDt);
 
     // fps
     this.fpsAccum += dt;
@@ -1272,7 +1276,7 @@ export class Engine {
     // FOV kick (sprint) — smooth apply to camera
     const targetFov = this.settings.fov + this.player.fovKick;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
-      this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.pow(0.001, dt));
+      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 10);
       this.camera.updateProjectionMatrix();
     }
 

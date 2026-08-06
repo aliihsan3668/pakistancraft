@@ -119,8 +119,9 @@ export class Player {
   }
 
   update(dt: number) {
-    // Smooth look: interpolate yaw/pitch toward target (frame-rate independent)
-    const lookLerp = 1 - Math.pow(0.001, dt); // ~0.8 at 60fps
+    // Smooth look: fast lerp toward target (responsive but no jitter).
+    // 0.5 factor at 60fps → near-instant with tiny smoothing.
+    const lookLerp = Math.min(1, dt * 30);
     this.yaw += (this._targetYaw - this.yaw) * lookLerp;
     this.pitch += (this._targetPitch - this.pitch) * lookLerp;
 
@@ -282,13 +283,13 @@ export class Player {
     }
 
     // sneak lowers eye height (crouch), smooth interpolation
-    const sneakLerp = 1 - Math.pow(0.001, dt);
+    const sneakLerp = Math.min(1, dt * 12);
     this._targetEyeHeight = this.input.sneak && !this.flying ? PLAYER_EYE - 0.3 : PLAYER_EYE;
     this._eyeHeight += (this._targetEyeHeight - this._eyeHeight) * sneakLerp;
 
     // FOV kick on sprint (smooth)
     this._targetFovKick = this.input.sprint && (Math.abs(this.vel.x) + Math.abs(this.vel.z)) > 1 ? 6 : 0;
-    this.fovKick += (this._targetFovKick - this.fovKick) * (1 - Math.pow(0.001, dt));
+    this.fovKick += (this._targetFovKick - this.fovKick) * Math.min(1, dt * 10);
 
     // Update camera
     const bobY = Math.sin(this.bob) * 0.06;

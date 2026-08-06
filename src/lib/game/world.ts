@@ -224,9 +224,9 @@ export class World {
       built++;
     }
 
-    // Unload distant chunks
+    // Unload distant chunks — tight margin to keep memory/draw calls low
     const unload: string[] = [];
-    const unloadDist = rd + 2;
+    const unloadDist = rd + 1;
     for (const [k, c] of this.chunks) {
       const dx = c.cx - pcx;
       const dz = c.cz - pcz;

@@ -4,8 +4,8 @@ export const CHUNK_SIZE = 16; // X & Z dimension of a chunk
 export const WORLD_HEIGHT = 64; // Y dimension of the world (full height)
 export const SEA_LEVEL = 24; // water fills up to this Y
 
-export const RENDER_DISTANCE = 5; // chunks around player to keep loaded (radius)
-export const UNLOAD_DISTANCE = 7; // chunks beyond this get unloaded
+export const RENDER_DISTANCE = 4; // chunks around player to keep loaded (radius)
+export const UNLOAD_DISTANCE = 5; // chunks beyond this get unloaded
 
 // Player physics
 export const PLAYER_HEIGHT = 1.8;
