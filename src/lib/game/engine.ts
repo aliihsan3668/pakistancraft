@@ -1,5 +1,5 @@
 // PakistanCraft — main engine: Three.js setup, render loop, input, interaction,
-// sky, particles, weather, settings, survival, save/load.
+// sky, particles, weather, settings, survival, save/load, explosions.
 import * as THREE from "three";
 import { World } from "./world";
 import { Player } from "./player";
@@ -7,6 +7,7 @@ import { Block, BLOCKS, buildAtlasTexture } from "./blocks";
 import { getBiome } from "./biomes";
 import { Sky } from "./sky";
 import { ParticleSystem } from "./particles";
+import { ExplosionSystem } from "./explosions";
 import {
   DEFAULT_SETTINGS,
   loadSettings,
@@ -41,6 +42,7 @@ export interface HudState {
   selectedSlot: number;
   hotbar: number[];
   onGround: boolean;
+  inWater: boolean;
   yaw: number;
   heading: string; // N / NE / E / ...
   weather: "clear" | "rain";
@@ -51,6 +53,7 @@ export interface HudState {
   targetBlock: { x: number; y: number; z: number } | null;
   breakProgress: number;
   biomeId: number;
+  flashTimer: number;
 }
 
 export interface EngineCallbacks {
@@ -128,6 +131,7 @@ export const CREATIVE_PALETTE: number[] = [
   Block.HEDGE,
   Block.FOUNTAIN,
   Block.LANTERN,
+  Block.TNT,
 ];
 
 const SAVE_KEY = "pakistancraft.save";
@@ -248,6 +252,7 @@ export class Engine {
   clouds: THREE.Mesh | null = null;
   sky: Sky;
   particles: ParticleSystem;
+  explosions: ExplosionSystem;
   rain: THREE.Points | null = null;
   rainVel: Float32Array | null = null;
   selectionBox: THREE.LineSegments | null = null;
@@ -400,6 +405,21 @@ export class Engine {
     this.makeClouds();
     this.sky = new Sky(this.scene);
     this.particles = new ParticleSystem(this.scene);
+    this.explosions = new ExplosionSystem({
+      removeBlock: (x, y, z) => {
+        this.world.setBlock(x, y, z, Block.AIR);
+        this.edits.set(`${x},${y},${z}`, Block.AIR);
+        this.world.remeshAround(x, z);
+        if (x & 15 === 0) this.world.remeshAround(x - 1, z);
+        if (x & 15 === 15) this.world.remeshAround(x + 1, z);
+        if (z & 15 === 0) this.world.remeshAround(x, z - 1);
+        if (z & 15 === 15) this.world.remeshAround(x, z + 1);
+      },
+      emitParticles: (x, y, z, block, count) => {
+        this.particles.emitBlockBreak(x, y, z, block, count);
+      },
+      getBlock: (x, y, z) => this.world.getBlock(x, y, z),
+    });
     this.makeRain();
     this.makeSelectionBox();
 
@@ -851,6 +871,12 @@ export class Engine {
   private tryPlace() {
     const hit = this.player.raycast(REACH_DISTANCE);
     if (!hit) return;
+    // If looking at TNT, ignite it instead of placing
+    const lookedAt = this.world.getBlock(hit.x, hit.y, hit.z);
+    if (lookedAt === Block.TNT) {
+      this.explosions.ignite(hit.x, hit.y, hit.z);
+      return;
+    }
     const px = hit.x + hit.nx;
     const py = hit.y + hit.ny;
     const pz = hit.z + hit.nz;
@@ -1207,6 +1233,7 @@ export class Engine {
     this.updateRain(dt);
     this.updateSky(dt);
     this.particles.update(dt);
+    this.explosions.update(dt);
     this.updateSelectionBox();
 
     // FOV kick (sprint) — smooth apply to camera
@@ -1254,6 +1281,7 @@ export class Engine {
       selectedSlot: this.selected,
       hotbar: [...this.hotbar],
       onGround: this.player.onGround,
+      inWater: this.player.inWater,
       yaw: this.player.yaw,
       heading: headingFromYaw(this.player.yaw),
       weather: this.raining ? "rain" : "clear",
@@ -1264,6 +1292,7 @@ export class Engine {
       targetBlock: this.targetBlock,
       breakProgress: this.breakProgress,
       biomeId: biomeId,
+      flashTimer: this.explosions.flashTimer,
     });
   }
 }

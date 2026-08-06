@@ -852,6 +852,23 @@ function Hud({ hud }: { hud: HudState }) {
 
   return (
     <div className="pointer-events-none absolute inset-0 z-10">
+      {/* Underwater overlay */}
+      {hud.inWater && (
+        <div
+          className="absolute inset-0"
+          style={{
+            background:
+              "linear-gradient(180deg, rgba(40,90,160,0.35) 0%, rgba(20,50,100,0.45) 100%)",
+          }}
+        />
+      )}
+      {/* Explosion flash overlay */}
+      {hud.flashTimer > 0 && (
+        <div
+          className="absolute inset-0 bg-orange-200"
+          style={{ opacity: hud.flashTimer * 2 }}
+        />
+      )}
       {/* Crosshair — dot + ring, scales subtly with break progress */}
       <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
         <div className="relative h-6 w-6">

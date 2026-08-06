@@ -185,18 +185,20 @@ export class World {
     const toLoad = this._cachedToLoad;
 
     let built = 0;
-    // Phase 1: ensure terrain for the closest not-yet-terrain chunks (small budget)
+    // Strict per-frame budget: at most 1 terrain gen, 1 decorate, 2 remeshes.
+    // This spreads work across frames to avoid jank spikes.
+    // Phase 1: ensure terrain for the closest not-yet-terrain chunk (max 1/frame)
     for (const job of toLoad) {
-      if (built >= budget) break;
+      if (built >= 1) break;
       const c = this.getOrCreateChunk(job.cx, job.cz);
       if (!c.generated) {
         this.ensureTerrain(job.cx, job.cz);
         built++;
       }
     }
-    // Phase 2: decorate closest not-decorated chunks
+    // Phase 2: decorate the closest not-decorated chunk (max 1/frame)
     for (const job of toLoad) {
-      if (built >= budget + 1) break;
+      if (built >= 2) break;
       const c = this.getChunk(job.cx, job.cz);
       if (c && c.generated && !c.decorated) {
         this.ensureDecorated(job.cx, job.cz);
@@ -204,18 +206,21 @@ export class World {
       }
     }
 
-    // Phase 3: remesh dirty chunks (closest first), within budget
+    // Phase 3: remesh dirty chunks (closest first), max 2/frame
+    let remeshed = 0;
     for (const job of toLoad) {
-      if (built >= budget + 3) break;
+      if (remeshed >= 2) break;
       const c = this.getChunk(job.cx, job.cz);
       if (!c || !c.generated || !c.decorated) continue;
       if (!c.dirty) continue;
-      // ensure neighbors generated so border face culling is correct
-      for (let dx = -1; dx <= 1; dx++)
-        for (let dz = -1; dz <= 1; dz++)
-          this.ensureTerrain(job.cx + dx, job.cz + dz);
+      // ensure immediate neighbors generated so border face culling is correct
+      this.ensureTerrain(job.cx - 1, job.cz);
+      this.ensureTerrain(job.cx + 1, job.cz);
+      this.ensureTerrain(job.cx, job.cz - 1);
+      this.ensureTerrain(job.cx, job.cz + 1);
       this.buildChunkMesh(c);
       c.dirty = false;
+      remeshed++;
       built++;
     }
 

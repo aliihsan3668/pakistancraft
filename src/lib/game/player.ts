@@ -126,9 +126,9 @@ export class Player {
 
     // Determine if eye is in water
     const eyeBlock = this.world.getBlock(
-      Math.floor(this.pos.x),
-      Math.floor(this.pos.y + PLAYER_EYE),
-      Math.floor(this.pos.z)
+      this.pos.x | 0,
+      (this.pos.y + PLAYER_EYE) | 0,
+      this.pos.z | 0
     );
     this.inWater = isLiquid(eyeBlock);
 
@@ -311,7 +311,7 @@ export class Player {
     else if (axis === "y") p.y += amount;
     else p.z += amount;
 
-    // AABB
+    // AABB — use bitwise | 0 for floor (fast for positive coords)
     const minX = p.x - PLAYER_RADIUS;
     const maxX = p.x + PLAYER_RADIUS;
     const minY = p.y;
@@ -319,12 +319,12 @@ export class Player {
     const minZ = p.z - PLAYER_RADIUS;
     const maxZ = p.z + PLAYER_RADIUS;
 
-    const x0 = Math.floor(minX);
-    const x1 = Math.floor(maxX);
-    const y0 = Math.floor(minY);
-    const y1 = Math.floor(maxY);
-    const z0 = Math.floor(minZ);
-    const z1 = Math.floor(maxZ);
+    const x0 = minX | 0;
+    const x1 = maxX | 0;
+    const y0 = minY | 0;
+    const y1 = maxY | 0;
+    const z0 = minZ | 0;
+    const z1 = maxZ | 0;
 
     for (let x = x0; x <= x1; x++)
       for (let y = y0; y <= y1; y++)
@@ -364,14 +364,26 @@ export class Player {
     ny: number;
     nz: number;
   } | null {
-    // DDA voxel traversal — uses cached vectors, no per-call allocation
-    const origin = this._rayOrigin.copy(this.camera.position);
+    // DDA voxel traversal — compute origin/direction from player state directly
+    // (avoids stale camera matrix when called outside the render loop)
+    const origin = this._rayOrigin.set(
+      this.pos.x,
+      this.pos.y + this._eyeHeight,
+      this.pos.z
+    );
     const dir = this._rayDir;
-    this.camera.getWorldDirection(dir);
+    // forward direction from yaw/pitch:
+    // yaw=0 → -Z, pitch=0 → horizontal; pitch>0 → looking down
+    const cp = Math.cos(this.pitch);
+    dir.set(
+      -Math.sin(this.yaw) * cp,
+      -Math.sin(this.pitch),
+      -Math.cos(this.yaw) * cp
+    );
 
-    let x = Math.floor(origin.x);
-    let y = Math.floor(origin.y);
-    let z = Math.floor(origin.z);
+    let x = origin.x | 0;
+    let y = origin.y | 0;
+    let z = origin.z | 0;
 
     const stepX = dir.x > 0 ? 1 : dir.x < 0 ? -1 : 0;
     const stepY = dir.y > 0 ? 1 : dir.y < 0 ? -1 : 0;

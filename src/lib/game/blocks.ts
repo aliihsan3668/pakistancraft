@@ -55,6 +55,7 @@ export const Block = {
   HEDGE: 48, // garden hedge
   FOUNTAIN: 49, // decorative fountain
   LANTERN: 50, // hanging lantern (light)
+  TNT: 51, // explosives!
 } as const;
 
 export type BlockId = number;
@@ -119,7 +120,9 @@ export const Tile = {
   HEDGE: 55,
   FOUNTAIN: 56,
   LANTERN: 57,
-  COUNT: 58,
+  TNT_SIDE: 58,
+  TNT_TOP: 59,
+  COUNT: 60,
 };
 
 export interface BlockDef {
@@ -332,6 +335,12 @@ export const BLOCKS: Record<number, BlockDef> = {
     light: 15,
     color: "#ffb838",
   }),
+  [Block.TNT]: def(
+    Block.TNT,
+    "TNT",
+    [Tile.TNT_TOP, Tile.TNT_SIDE, Tile.TNT_TOP],
+    { color: "#c8302a" }
+  ),
 };
 
 export function isSolid(id: BlockId): boolean {
@@ -943,6 +952,32 @@ export function drawTile(ctx: CanvasRenderingContext2D, tile: number, x0: number
       ctx.fillStyle = "#5a4020";
       ctx.fillRect(x0 + 5, y0 + 11, 6, 1);
       ctx.fillRect(x0 + 7, y0 + 12, 2, 3);
+      break;
+    }
+    case Tile.TNT_SIDE: {
+      noisy(ctx, x0, y0, "#c8302a", 0.05, 511);
+      // "TNT" text band
+      ctx.fillStyle = "#f0e8d0";
+      ctx.fillRect(x0 + 1, y0 + 5, 14, 6);
+      ctx.fillStyle = "#1a1a1a";
+      ctx.font = "bold 6px monospace";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("TNT", x0 + 8, y0 + 8);
+      // top + bottom dark bands
+      ctx.fillStyle = "#8a1a14";
+      ctx.fillRect(x0, y0, 16, 2);
+      ctx.fillRect(x0, y0 + 14, 16, 2);
+      break;
+    }
+    case Tile.TNT_TOP: {
+      noisy(ctx, x0, y0, "#d83830", 0.04, 512);
+      ctx.strokeStyle = "#8a1a14";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x0 + 0.5, y0 + 0.5, 15, 15);
+      // fuse dot in center
+      ctx.fillStyle = "#3a2a18";
+      ctx.fillRect(x0 + 7, y0 + 7, 2, 2);
       break;
     }
     default:
