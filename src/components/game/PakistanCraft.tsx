@@ -283,7 +283,7 @@ export default function PakistanCraft() {
 
       {phase === "playing" && hud && (
         <>
-          <Hud hud={hud} />
+          <Hud hud={hud} isTouch={isTouch} />
           <Minimap hud={hud} engine={engineState} />
           {isTouch && !paused && !showSettings && !showInventory && (
             <TouchControls
@@ -299,6 +299,14 @@ export default function PakistanCraft() {
                 if (!eng) return;
                 if (eng.player.gameMode !== "creative") eng.setGameMode("creative");
                 eng.player.toggleFly();
+              }}
+              onInventory={() => {
+                setShowInventory(true);
+                const eng = engineRef.current;
+                if (eng) {
+                  eng.inputEnabled = false;
+                  if (document.pointerLockElement) document.exitPointerLock();
+                }
               }}
             />
           )}
@@ -839,7 +847,7 @@ function ModeButton({
 }
 
 // ---------- HUD ----------
-function Hud({ hud }: { hud: HudState }) {
+function Hud({ hud, isTouch }: { hud: HudState; isTouch: boolean }) {
   const hours = Math.floor(hud.timeOfDay * 24);
   const minutes = Math.floor((hud.timeOfDay * 24 * 60) % 60);
   const timeStr = `${hours.toString().padStart(2, "0")}:${minutes
@@ -890,8 +898,8 @@ function Hud({ hud }: { hud: HudState }) {
         {hud.selectedName}
       </div>
 
-      {/* Top-left info panel */}
-      <div className="absolute left-3 top-3 rounded-lg border border-white/10 bg-black/55 px-3 py-2 font-mono text-[11px] leading-relaxed text-white backdrop-blur">
+      {/* Top-left info panel — responsive sizing */}
+      <div className="absolute left-2 top-2 rounded-lg border border-white/10 bg-black/55 px-2.5 py-1.5 font-mono text-[10px] leading-relaxed text-white backdrop-blur sm:left-3 sm:top-3 sm:px-3 sm:py-2 sm:text-[11px]">
         <div className="flex items-center gap-2">
           <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
           <span className="font-bold text-emerald-300">{hud.biome}</span>
@@ -939,16 +947,18 @@ function Hud({ hud }: { hud: HudState }) {
         </div>
       </div>
 
-      {/* Top-right hint */}
-      <div className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/45 px-3 py-1.5 font-mono text-[11px] text-white/70 backdrop-blur">
-        <span className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5">E</span>{" "}
-        Inventory{"  "}
-        <span className="ml-2 rounded border border-white/20 bg-white/10 px-1.5 py-0.5">Esc</span>{" "}
-        Pause
-      </div>
+      {/* Top-right hint — hidden on touch devices */}
+      {!isTouch && (
+        <div className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/45 px-3 py-1.5 font-mono text-[11px] text-white/70 backdrop-blur">
+          <span className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5">E</span>{" "}
+          Inventory{"  "}
+          <span className="ml-2 rounded border border-white/20 bg-white/10 px-1.5 py-0.5">Esc</span>{" "}
+          Pause
+        </div>
+      )}
 
-      {/* Drag-mode hint */}
-      {!hud.pointerLocked && (
+      {/* Drag-mode hint — hidden on touch devices */}
+      {!hud.pointerLocked && !isTouch && (
         <div className="absolute left-1/2 top-14 -translate-x-1/2 rounded-full border border-amber-400/30 bg-black/60 px-4 py-1.5 text-center font-mono text-[11px] text-amber-200/90 backdrop-blur">
           drag to look · click to break · right-click to place · arrows to look
         </div>
@@ -978,17 +988,17 @@ function Hud({ hud }: { hud: HudState }) {
 
 function Hotbar({ hud }: { hud: HudState }) {
   return (
-    <div className="flex gap-1 rounded-lg border-2 border-black/40 bg-black/40 p-1 backdrop-blur">
+    <div className="flex gap-0.5 rounded-lg border-2 border-black/40 bg-black/40 p-1 backdrop-blur sm:gap-1">
       {hud.hotbar.map((blockId, i) => {
         const isSel = i === hud.selectedSlot;
         return (
           <div
             key={i}
-            className={`relative h-12 w-12 rounded-md border-2 ${
+            className={`relative h-11 w-11 rounded-md border-2 sm:h-12 sm:w-12 ${
               isSel ? "border-white bg-white/15" : "border-white/15 bg-black/40"
             }`}
           >
-            <BlockIcon blockId={blockId} size={44} />
+            <BlockIcon blockId={blockId} size={42} />
             <span className="absolute bottom-0 right-0.5 font-mono text-[9px] text-white/70">
               {i + 1}
             </span>

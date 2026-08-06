@@ -92,7 +92,7 @@ export function Minimap({
   }, [hud, engine]);
 
   return (
-    <div className="absolute bottom-3 right-3 rounded-lg border border-white/20 bg-black/40 p-1 backdrop-blur">
+    <div className="absolute bottom-3 right-2 hidden rounded-lg border border-white/20 bg-black/40 p-1 backdrop-blur sm:right-3 sm:block">
       <canvas ref={ref} width={110} height={110} className="block" />
     </div>
   );

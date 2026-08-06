@@ -336,6 +336,18 @@ export class Engine {
     this.settings = opts.settings ?? loadSettings();
     this.hotbar = [...DEFAULT_HOTBAR];
 
+    // Auto-detect mobile devices and reduce render distance + pixel ratio for perf
+    const isMobile =
+      typeof window !== "undefined" &&
+      ("ontouchstart" in window || navigator.maxTouchPoints > 0) &&
+      window.matchMedia("(pointer: coarse)").matches;
+    if (isMobile) {
+      this.settings = {
+        ...this.settings,
+        renderDistance: Math.min(this.settings.renderDistance, 4),
+      };
+    }
+
     try {
       this.renderer = new THREE.WebGLRenderer({
         canvas,
@@ -348,7 +360,10 @@ export class Engine {
       );
       throw e;
     }
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
+    // Cap pixel ratio lower on mobile for performance
+    this.renderer.setPixelRatio(
+      Math.min(window.devicePixelRatio, isMobile ? 1.0 : 1.5)
+    );
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
@@ -1152,12 +1167,12 @@ export class Engine {
         this.player.setLookFromDelta(0, -lr, 1);
       if (this.keys.has("ArrowDown"))
         this.player.setLookFromDelta(0, lr, 1);
-      // touch look
+      // touch look — higher sensitivity than mouse for responsive feel
       if (this.touchInput.lookDX !== 0 || this.touchInput.lookDY !== 0) {
         this.player.setLookFromDelta(
           this.touchInput.lookDX,
           this.touchInput.lookDY,
-          0.004 * this.settings.mouseSensitivity
+          0.006 * this.settings.mouseSensitivity
         );
         this.touchInput.lookDX = 0;
         this.touchInput.lookDY = 0;
