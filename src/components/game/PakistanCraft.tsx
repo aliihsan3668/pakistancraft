@@ -53,7 +53,9 @@ export default function PakistanCraft() {
   );
   const [toast, setToast] = useState<string | null>(null);
   const [engineState, setEngineState] = useState<Engine | null>(null);
-  const isTouch = useIsTouchDevice();
+  const [forceTouch, setForceTouch] = useState(false);
+  const detectedTouch = useIsTouchDevice();
+  const isTouch = forceTouch || detectedTouch;
 
   // refresh save flag when returning to start screen
   useEffect(() => {
@@ -259,12 +261,16 @@ export default function PakistanCraft() {
   }
 
   return (
-    <div className="fixed inset-0 overflow-hidden bg-black select-none">
+    <div
+      className="fixed inset-0 overflow-hidden bg-black select-none"
+      style={{ height: "100dvh" }}
+    >
       {phase === "playing" && (
         <canvas
           ref={canvasRef}
           onClick={onCanvasClick}
-          className="absolute inset-0 block h-full w-full touch-none"
+          className="absolute inset-0 block h-full w-full"
+          style={{ touchAction: "none" }}
         />
       )}
 
@@ -322,6 +328,8 @@ export default function PakistanCraft() {
               onSave={onSaveGame}
               onQuit={onQuitToMenu}
               hasSave={hasSave}
+              isTouch={isTouch}
+              onToggleTouch={() => setForceTouch((v) => !v)}
             />
           )}
           {showSettings && (
@@ -568,12 +576,16 @@ function PauseOverlay({
   onSave,
   onQuit,
   hasSave,
+  isTouch,
+  onToggleTouch,
 }: {
   onResume: () => void;
   onSettings: () => void;
   onSave: () => void;
   onQuit: () => void;
   hasSave: boolean;
+  isTouch: boolean;
+  onToggleTouch: () => void;
 }) {
   return (
     <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm">
@@ -603,6 +615,15 @@ function PauseOverlay({
               💾 Save
             </Button>
           </div>
+          <Button
+            onClick={onToggleTouch}
+            variant="outline"
+            className={`border-white/20 text-white hover:bg-white/15 ${
+              isTouch ? "bg-emerald-600/30" : "bg-white/5"
+            }`}
+          >
+            📱 Touch Mode: {isTouch ? "ON" : "OFF"}
+          </Button>
           <Button
             onClick={onQuit}
             variant="ghost"

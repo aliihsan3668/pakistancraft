@@ -469,6 +469,9 @@ export class Engine {
     window.addEventListener("wheel", this._onWheel, { passive: false });
     document.addEventListener("pointerlockchange", this._onPointerLockChange);
     window.addEventListener("resize", this._onResize);
+    if (typeof window !== "undefined" && window.visualViewport) {
+      window.visualViewport.addEventListener("resize", this._onResize);
+    }
     this.canvas.addEventListener("contextmenu", this._onContext);
     this.lastTime = performance.now();
     this._raf = requestAnimationFrame(this.loop);
@@ -490,6 +493,9 @@ export class Engine {
     window.removeEventListener("wheel", this._onWheel);
     document.removeEventListener("pointerlockchange", this._onPointerLockChange);
     window.removeEventListener("resize", this._onResize);
+    if (typeof window !== "undefined" && window.visualViewport) {
+      window.visualViewport.removeEventListener("resize", this._onResize);
+    }
     this.canvas.removeEventListener("contextmenu", this._onContext);
     if (document.pointerLockElement === this.canvas) document.exitPointerLock();
     // dispose all subsystems to prevent GPU memory leaks
@@ -863,8 +869,11 @@ export class Engine {
   }
 
   private onResize() {
+    // Use visualViewport when available for correct mobile sizing (address bar)
     const w = window.innerWidth;
-    const h = window.innerHeight;
+    const h =
+      (typeof window !== "undefined" && window.visualViewport?.height) ||
+      window.innerHeight;
     this.renderer.setSize(w, h, false);
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();

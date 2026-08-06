@@ -2,11 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Redesigned touch controls for phones & iPads.
-// - Dynamic joystick: appears wherever you touch on the left half.
-// - Look pad: right half, drag to look, tap to break, double-tap to place.
-// - Action buttons: bottom-right, large touch targets.
-// - Touch hotbar: tap slots to select.
+// Touch controls for phones & iPads — proper multi-touch via window listeners.
+// No setPointerCapture (it breaks multi-touch). Each zone tracks its own pointerId.
 export function TouchControls({
   onMove,
   onLook,
@@ -41,13 +38,9 @@ export function TouchControls({
   return (
     <div className="pointer-events-none absolute inset-0 z-20 select-none">
       <DynamicJoystick onMove={onMove} />
-      <LookPad
-        onLook={onLook}
-        onTapBreak={onTapBreak}
-        onTapPlace={onPlace}
-      />
-      {/* Action buttons — right side, large for thumbs */}
-      <div className="pointer-events-auto absolute bottom-[96px] right-3 flex flex-col gap-2">
+      <LookPad onLook={onLook} onTapBreak={onTapBreak} onTapPlace={onPlace} />
+      {/* Action buttons — right side */}
+      <div className="pointer-events-auto absolute bottom-[100px] right-3 flex flex-col gap-2">
         <div className="flex gap-2">
           <TouchBtn label="🎒" onTap={onInventory} className="bg-slate-700/85" />
           <TouchBtn label="✈" onTap={onFly} className="bg-amber-600/85" />
@@ -66,20 +59,22 @@ export function TouchControls({
           />
         </div>
       </div>
-      {/* Jump + Sprint — left of actions */}
-      <div className="pointer-events-auto absolute bottom-[96px] right-[162px] flex flex-col gap-2">
+      {/* Jump + Sprint */}
+      <div className="pointer-events-auto absolute bottom-[100px] right-[162px] flex flex-col gap-2">
         <TouchBtn
           label="⇪"
-          onDown={onSprint}
+          onDown={() => onSprint(true)}
+          onUp={() => onSprint(false)}
           className="bg-cyan-700/85 h-[50px] w-[50px] text-xl"
         />
         <TouchBtn
           label="▲"
-          onDown={onJump}
+          onDown={() => onJump(true)}
+          onUp={() => onJump(false)}
           className="bg-indigo-700/90 h-[68px] w-[68px] text-2xl"
         />
       </div>
-      {/* Touch hotbar — centered bottom, tappable */}
+      {/* Touch hotbar */}
       <TouchHotbar
         hotbar={hotbar}
         selectedSlot={selectedSlot}
@@ -89,7 +84,7 @@ export function TouchControls({
   );
 }
 
-// Dynamic joystick: appears wherever the player touches on the left 45% of screen.
+// Dynamic joystick — listens on window for move/up so multi-touch works.
 function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void }) {
   const [base, setBase] = useState<{ x: number; y: number } | null>(null);
   const [knob, setKnob] = useState({ x: 0, y: 0 });
@@ -104,6 +99,12 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
       let dx = cx - b.x;
       let dy = cy - b.y;
       const len = Math.hypot(dx, dy);
+      // dead zone in center
+      if (len < 8) {
+        setKnob({ x: 0, y: 0 });
+        onMove(0, 0);
+        return;
+      }
       if (len > RADIUS) {
         dx = (dx / len) * RADIUS;
         dy = (dy / len) * RADIUS;
@@ -114,12 +115,38 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
     [onMove]
   );
 
+  // Window listeners for move/up — allows multi-touch (joystick + look simultaneous)
+  useEffect(() => {
+    const onMoveEvt = (e: PointerEvent) => {
+      if (touchId.current !== e.pointerId) return;
+      e.preventDefault();
+      updateKnob(e.clientX, e.clientY);
+    };
+    const onUpEvt = (e: PointerEvent) => {
+      if (touchId.current !== e.pointerId) return;
+      touchId.current = null;
+      baseRef.current = null;
+      setBase(null);
+      setKnob({ x: 0, y: 0 });
+      onMove(0, 0);
+    };
+    window.addEventListener("pointermove", onMoveEvt, { passive: false });
+    window.addEventListener("pointerup", onUpEvt);
+    window.addEventListener("pointercancel", onUpEvt);
+    return () => {
+      window.removeEventListener("pointermove", onMoveEvt);
+      window.removeEventListener("pointerup", onUpEvt);
+      window.removeEventListener("pointercancel", onUpEvt);
+    };
+  }, [updateKnob, onMove]);
+
   const start = useCallback(
     (e: React.PointerEvent) => {
+      // Only respond on left 45% of screen
       if (e.clientX > window.innerWidth * 0.45) return;
-      if (touchId.current !== null) return;
+      if (touchId.current !== null) return; // already tracking a finger
+      e.preventDefault();
       touchId.current = e.pointerId;
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
       baseRef.current = { x: e.clientX, y: e.clientY };
       setBase({ x: e.clientX, y: e.clientY });
       updateKnob(e.clientX, e.clientY);
@@ -127,39 +154,16 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
     [updateKnob]
   );
 
-  const move = useCallback(
-    (e: React.PointerEvent) => {
-      if (touchId.current !== e.pointerId) return;
-      updateKnob(e.clientX, e.clientY);
-    },
-    [updateKnob]
-  );
-
-  const end = useCallback(
-    (e: React.PointerEvent) => {
-      if (touchId.current !== e.pointerId) return;
-      touchId.current = null;
-      baseRef.current = null;
-      setBase(null);
-      setKnob({ x: 0, y: 0 });
-      onMove(0, 0);
-    },
-    [onMove]
-  );
-
   return (
     <div
       onPointerDown={start}
-      onPointerMove={move}
-      onPointerUp={end}
-      onPointerCancel={end}
       className="pointer-events-auto absolute bottom-0 left-0 top-0"
       style={{ width: "45%", touchAction: "none" }}
     >
       {base && (
         <>
           <div
-            className="absolute rounded-full border-2 border-white/25 bg-black/30 backdrop-blur"
+            className="pointer-events-none absolute rounded-full border-2 border-white/25 bg-black/30 backdrop-blur"
             style={{
               left: base.x - RADIUS,
               top: base.y - RADIUS,
@@ -168,7 +172,7 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
             }}
           />
           <div
-            className="absolute rounded-full border-2 border-white/50 bg-white/30 backdrop-blur"
+            className="pointer-events-none absolute rounded-full border-2 border-white/50 bg-white/30 backdrop-blur"
             style={{
               left: base.x - 26 + knob.x,
               top: base.y - 26 + knob.y,
@@ -182,8 +186,7 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
   );
 }
 
-// Look pad: right 55% of screen. Drag to look, tap (quick touch) to break,
-// double-tap to place. Uses direct callbacks for one-shot actions.
+// Look pad — right 55%. Window listeners for multi-touch.
 function LookPad({
   onLook,
   onTapBreak,
@@ -200,63 +203,64 @@ function LookPad({
   const moved = useRef(0);
   const lastTap = useRef(0);
 
+  useEffect(() => {
+    const onMoveEvt = (e: PointerEvent) => {
+      if (touchId.current !== e.pointerId) return;
+      e.preventDefault();
+      const dx = e.clientX - last.current.x;
+      const dy = e.clientY - last.current.y;
+      last.current = { x: e.clientX, y: e.clientY };
+      moved.current += Math.abs(dx) + Math.abs(dy);
+      onLook(dx, dy);
+    };
+    const onUpEvt = (e: PointerEvent) => {
+      if (touchId.current !== e.pointerId) return;
+      touchId.current = null;
+      const dt = performance.now() - startTime.current;
+      // quick tap without much movement → action
+      if (moved.current < 12 && dt < 300) {
+        const now = performance.now();
+        if (now - lastTap.current < 350) {
+          // double tap → place
+          onTapPlace();
+          lastTap.current = 0;
+        } else {
+          // single tap → break
+          onTapBreak();
+          lastTap.current = now;
+        }
+      }
+    };
+    window.addEventListener("pointermove", onMoveEvt, { passive: false });
+    window.addEventListener("pointerup", onUpEvt);
+    window.addEventListener("pointercancel", onUpEvt);
+    return () => {
+      window.removeEventListener("pointermove", onMoveEvt);
+      window.removeEventListener("pointerup", onUpEvt);
+      window.removeEventListener("pointercancel", onUpEvt);
+    };
+  }, [onLook, onTapBreak, onTapPlace]);
+
   const start = useCallback((e: React.PointerEvent) => {
-    if (touchId.current !== null) return;
+    if (touchId.current !== null) return; // already tracking
+    e.preventDefault();
     touchId.current = e.pointerId;
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
     last.current = { x: e.clientX, y: e.clientY };
     startTime.current = performance.now();
     startPos.current = { x: e.clientX, y: e.clientY };
     moved.current = 0;
   }, []);
 
-  const move = useCallback(
-    (e: React.PointerEvent) => {
-      if (touchId.current !== e.pointerId) return;
-      const dx = e.clientX - last.current.x;
-      const dy = e.clientY - last.current.y;
-      last.current = { x: e.clientX, y: e.clientY };
-      moved.current += Math.abs(dx) + Math.abs(dy);
-      onLook(dx, dy);
-    },
-    [onLook]
-  );
-
-  const end = useCallback(
-    (e: React.PointerEvent) => {
-      if (touchId.current !== e.pointerId) return;
-      touchId.current = null;
-      const dt = performance.now() - startTime.current;
-      // quick tap without much movement → action
-      if (moved.current < 10 && dt < 280) {
-        const now = performance.now();
-        if (now - lastTap.current < 320) {
-          // double tap → place
-          onTapPlace();
-          lastTap.current = 0;
-        } else {
-          // single tap → break (immediate one-shot)
-          onTapBreak();
-          lastTap.current = now;
-        }
-      }
-    },
-    [onTapBreak, onTapPlace]
-  );
-
   return (
     <div
       onPointerDown={start}
-      onPointerMove={move}
-      onPointerUp={end}
-      onPointerCancel={end}
       className="pointer-events-auto absolute bottom-0 right-0 top-0"
       style={{ width: "55%", touchAction: "none" }}
     />
   );
 }
 
-// Touch-friendly hotbar: centered at bottom, tappable slots.
+// Touch-friendly hotbar
 function TouchHotbar({
   hotbar,
   selectedSlot,
@@ -282,7 +286,11 @@ function TouchHotbar({
                 : "border-white/15 bg-black/40"
             }`}
             style={{ touchAction: "none" }}
-          />
+          >
+            <span className="absolute bottom-0 right-0.5 font-mono text-[8px] text-white/60">
+              {i + 1}
+            </span>
+          </button>
         ))}
       </div>
     </div>
