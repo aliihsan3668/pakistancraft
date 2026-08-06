@@ -239,3 +239,22 @@ Work Log:
 
 Stage Summary:
 - Fixed touch break/place (one-shot tap via direct API, continuous via held button), added touch hotbar (tap to select), mobile-friendly inventory (5 cols, bigger targets), proper multi-touch zones (joystick + look simultaneous). Live at pakistancraft.vercel.app.
+
+---
+Task ID: 11
+Agent: main (Z.ai Code)
+Task: Fix all touch glitches, make it work on phones/iPads.
+
+Work Log:
+- **Root cause identified**: The old touch controls used `setPointerCapture()` on each zone div, which captures ALL pointer events to that div — breaking multi-touch (can't move joystick + look simultaneously). Also, the headless test browser doesn't support touch so the controls never rendered for testing.
+- **Window-based multi-touch** (`TouchControls.tsx`): Rewrote DynamicJoystick and LookPad to listen on `window` for `pointermove`/`pointerup`/`pointercancel` instead of using `setPointerCapture`. Each zone tracks its own `pointerId` and ignores other pointers. Now you can drag the joystick (left thumb) and look (right thumb) at the same time.
+- **Dead zone in joystick**: Added an 8px dead zone in the center so tiny movements don't cause jitter.
+- **Manual Touch Mode toggle** (`PakistanCraft.tsx`): Added a "📱 Touch Mode: ON/OFF" button in the pause menu so users can manually enable touch controls even if auto-detection fails (common on iPads and some Android browsers). `forceTouch` state overrides `useIsTouchDevice`.
+- **100dvh viewport** (`PakistanCraft.tsx`): Changed root container height from `100vh` to `100dvh` (dynamic viewport height) which correctly handles mobile browser address bars that appear/disappear.
+- **visualViewport resize** (`engine.ts`): Added `window.visualViewport.addEventListener("resize", ...)` so the canvas resizes correctly when the mobile address bar shows/hides. `onResize` now uses `visualViewport.height` when available.
+- **Canvas touch-action** (`PakistanCraft.tsx`): Added `touchAction: "none"` to the canvas element to prevent browser gestures (scroll, zoom) from interfering with touch controls.
+- Verified: Touch Mode toggle works (button shows "ON", 6 touch buttons render after resume, touch container z-20 present). VLM confirmed "Touch Mode: ON" visible.
+- Pushed to GitHub, deployed to Vercel.
+
+Stage Summary:
+- Fixed multi-touch (window listeners, no pointer capture), added manual Touch Mode toggle in pause menu, 100dvh viewport for mobile address bar, visualViewport resize, joystick dead zone, canvas touch-action none. Live at pakistancraft.vercel.app.
