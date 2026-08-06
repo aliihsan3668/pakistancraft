@@ -1079,13 +1079,19 @@ function Inventory({
   onClose: () => void;
 }) {
   return (
-    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="max-h-[88vh] w-[min(680px,92vw)] overflow-hidden rounded-2xl border border-white/15 bg-[#0a2a18] shadow-2xl">
+    <div
+      className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[88vh] w-[min(680px,94vw)] flex-col overflow-hidden rounded-2xl border border-white/15 bg-[#0a2a18] shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
           <div>
             <h2 className="text-lg font-bold text-white">Block Palette</h2>
             <p className="text-xs text-white/60">
-              Click a block to put it in hotbar slot{" "}
+              Tap a block to put it in slot{" "}
               <span className="font-mono text-amber-300">{selectedSlot + 1}</span>
             </p>
           </div>
@@ -1099,11 +1105,12 @@ function Inventory({
           </Button>
         </div>
 
-        <div className="flex justify-center gap-1 border-b border-white/10 px-5 py-3">
+        {/* Current hotbar preview */}
+        <div className="flex justify-center gap-1 border-b border-white/10 px-3 py-3">
           {hotbar.map((b, i) => (
             <div
               key={i}
-              className={`relative h-11 w-11 rounded-md border-2 ${
+              className={`relative h-11 w-11 overflow-hidden rounded-md border-2 ${
                 i === selectedSlot
                   ? "border-amber-400 bg-white/15"
                   : "border-white/15 bg-black/40"
@@ -1117,19 +1124,21 @@ function Inventory({
           ))}
         </div>
 
-        <div className="max-h-[52vh] overflow-y-auto p-4">
-          <div className="grid grid-cols-5 gap-2 sm:grid-cols-8">
+        {/* Palette grid — scrollable, with block icons */}
+        <div
+          className="flex-1 overflow-y-auto p-3"
+          style={{ WebkitOverflowScrolling: "touch" }}
+        >
+          <div className="grid grid-cols-5 gap-2 sm:grid-cols-7">
             {CREATIVE_PALETTE.map((b) => (
               <button
                 key={b}
                 onClick={() => onPick(b)}
                 title={BLOCKS[b]?.name}
-                className="group relative flex aspect-square items-center justify-center rounded-lg border border-white/10 bg-black/40 transition active:scale-95 hover:border-amber-400 hover:bg-white/10"
+                className="group relative flex aspect-square items-center justify-center overflow-hidden rounded-lg border border-white/10 bg-black/40 transition active:scale-95 hover:border-amber-400 hover:bg-white/10"
+                style={{ touchAction: "manipulation" }}
               >
                 <BlockIcon blockId={b} size={42} />
-                <span className="pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full whitespace-nowrap rounded bg-black/90 px-1.5 py-0.5 font-mono text-[10px] text-white opacity-0 transition group-hover:opacity-100">
-                  {BLOCKS[b]?.name}
-                </span>
               </button>
             ))}
           </div>

@@ -1,9 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { BLOCKS } from "@/lib/game/blocks";
+import { makeBlockIcon } from "@/lib/game/icons";
 
-// Touch controls for phones & iPads.
-// Uses refs inside effects so window listeners never churn on parent re-render.
+// Touch controls using NATIVE touch events for maximum iOS Safari compatibility.
+// Pointer events are unreliable on older iOS Safari — touchstart/touchmove/touchend work everywhere.
 export function TouchControls({
   onMove,
   onLook,
@@ -37,9 +39,9 @@ export function TouchControls({
 }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-20 select-none">
-      <DynamicJoystick onMove={onMove} />
-      <LookPad onLook={onLook} onTapBreak={onTapBreak} onTapPlace={onPlace} />
-      {/* Action buttons — right side */}
+      <TouchMoveZone onMove={onMove} />
+      <TouchLookZone onLook={onLook} onTapBreak={onTapBreak} onTapPlace={onPlace} />
+      {/* Action buttons */}
       <div className="pointer-events-auto absolute bottom-[100px] right-3 flex flex-col gap-2">
         <div className="flex gap-2">
           <TouchBtn label="🎒" onTap={onInventory} className="bg-slate-700/85" />
@@ -59,7 +61,7 @@ export function TouchControls({
           />
         </div>
       </div>
-      {/* Jump (ascend) + Sprint + Descend — left of actions */}
+      {/* Jump + Sprint + Descend */}
       <div className="pointer-events-auto absolute bottom-[100px] right-[162px] flex flex-col gap-2">
         <TouchBtn
           label="⇪"
@@ -74,7 +76,6 @@ export function TouchControls({
           className="bg-indigo-700/90 h-[68px] w-[68px] text-2xl"
         />
       </div>
-      {/* Descend button — below jump, for fly mode */}
       <div className="pointer-events-auto absolute bottom-[100px] right-[232px]">
         <TouchBtn
           label="▼"
@@ -83,7 +84,7 @@ export function TouchControls({
           className="bg-purple-700/90 h-[50px] w-[50px] text-xl"
         />
       </div>
-      {/* Touch hotbar */}
+      {/* Touch hotbar with block icons */}
       <TouchHotbar
         hotbar={hotbar}
         selectedSlot={selectedSlot}
@@ -93,16 +94,14 @@ export function TouchControls({
   );
 }
 
-// Dynamic joystick — uses refs so window listeners are added ONCE.
-function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void }) {
+// Movement zone (left 45%) — uses native touch events
+function TouchMoveZone({ onMove }: { onMove: (x: number, y: number) => void }) {
   const [base, setBase] = useState<{ x: number; y: number } | null>(null);
   const [knob, setKnob] = useState({ x: 0, y: 0 });
   const touchId = useRef<number | null>(null);
   const baseRef = useRef<{ x: number; y: number } | null>(null);
   const onMoveRef = useRef(onMove);
-  useEffect(() => {
-    onMoveRef.current = onMove;
-  });
+  useEffect(() => { onMoveRef.current = onMove; });
   const RADIUS = 60;
 
   const updateKnob = useCallback((cx: number, cy: number) => {
@@ -124,69 +123,70 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
     onMoveRef.current(dx / RADIUS, -dy / RADIUS);
   }, []);
 
-  // Window listeners added ONCE (empty deps) — uses refs for callbacks
   useEffect(() => {
-    const onMoveEvt = (e: PointerEvent) => {
-      if (touchId.current !== e.pointerId) return;
-      e.preventDefault();
-      updateKnob(e.clientX, e.clientY);
+    const zone = (e: TouchEvent) => {
+      // Only handle touches that start on the left 45%
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.clientX <= window.innerWidth * 0.45) {
+          if (e.type === "touchstart" && touchId.current === null) {
+            touchId.current = t.identifier;
+            baseRef.current = { x: t.clientX, y: t.clientY };
+            setBase({ x: t.clientX, y: t.clientY });
+            updateKnob(t.clientX, t.clientY);
+          }
+        }
+      }
     };
-    const onUpEvt = (e: PointerEvent) => {
-      if (touchId.current !== e.pointerId) return;
-      touchId.current = null;
-      baseRef.current = null;
-      setBase(null);
-      setKnob({ x: 0, y: 0 });
-      onMoveRef.current(0, 0);
+    const onMove = (e: TouchEvent) => {
+      for (let i = 0; i < e.touches.length; i++) {
+        const t = e.touches[i];
+        if (t.identifier === touchId.current) {
+          e.preventDefault();
+          updateKnob(t.clientX, t.clientY);
+          break;
+        }
+      }
     };
-    window.addEventListener("pointermove", onMoveEvt, { passive: false });
-    window.addEventListener("pointerup", onUpEvt);
-    window.addEventListener("pointercancel", onUpEvt);
+    const onEnd = (e: TouchEvent) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === touchId.current) {
+          touchId.current = null;
+          baseRef.current = null;
+          setBase(null);
+          setKnob({ x: 0, y: 0 });
+          onMoveRef.current(0, 0);
+          break;
+        }
+      }
+    };
+    window.addEventListener("touchstart", zone, { passive: true });
+    window.addEventListener("touchmove", onMove, { passive: false });
+    window.addEventListener("touchend", onEnd, { passive: true });
+    window.addEventListener("touchcancel", onEnd, { passive: true });
     return () => {
-      window.removeEventListener("pointermove", onMoveEvt);
-      window.removeEventListener("pointerup", onUpEvt);
-      window.removeEventListener("pointercancel", onUpEvt);
+      window.removeEventListener("touchstart", zone);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onEnd);
+      window.removeEventListener("touchcancel", onEnd);
     };
   }, [updateKnob]);
 
-  const start = useCallback(
-    (e: React.PointerEvent) => {
-      if (e.clientX > window.innerWidth * 0.45) return;
-      if (touchId.current !== null) return;
-      e.preventDefault();
-      touchId.current = e.pointerId;
-      baseRef.current = { x: e.clientX, y: e.clientY };
-      setBase({ x: e.clientX, y: e.clientY });
-      updateKnob(e.clientX, e.clientY);
-    },
-    [updateKnob]
-  );
-
   return (
     <div
-      onPointerDown={start}
       className="pointer-events-auto absolute bottom-0 left-0 top-0"
       style={{ width: "45%", touchAction: "none" }}
     >
       {base && (
         <>
           <div
-            className="pointer-events-none absolute rounded-full border-2 border-white/25 bg-black/30 backdrop-blur"
-            style={{
-              left: base.x - RADIUS,
-              top: base.y - RADIUS,
-              width: RADIUS * 2,
-              height: RADIUS * 2,
-            }}
+            className="pointer-events-none absolute rounded-full border-2 border-white/25 bg-black/30"
+            style={{ left: base.x - RADIUS, top: base.y - RADIUS, width: RADIUS * 2, height: RADIUS * 2 }}
           />
           <div
-            className="pointer-events-none absolute rounded-full border-2 border-white/50 bg-white/30 backdrop-blur"
-            style={{
-              left: base.x - 26 + knob.x,
-              top: base.y - 26 + knob.y,
-              width: 52,
-              height: 52,
-            }}
+            className="pointer-events-none absolute rounded-full border-2 border-white/50 bg-white/30"
+            style={{ left: base.x - 26 + knob.x, top: base.y - 26 + knob.y, width: 52, height: 52 }}
           />
         </>
       )}
@@ -194,8 +194,8 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
   );
 }
 
-// Look pad — uses refs so window listeners are added ONCE (no churn).
-function LookPad({
+// Look zone (right 55%) — uses native touch events
+function TouchLookZone({
   onLook,
   onTapBreak,
   onTapPlace,
@@ -204,13 +204,11 @@ function LookPad({
   onTapBreak: () => void;
   onTapPlace: () => void;
 }) {
-  const last = useRef({ x: 0, y: 0 });
   const touchId = useRef<number | null>(null);
+  const last = useRef({ x: 0, y: 0 });
   const startTime = useRef(0);
-  const startPos = useRef({ x: 0, y: 0 });
   const moved = useRef(0);
   const lastTap = useRef(0);
-  // refs to callbacks so the effect never re-runs
   const onLookRef = useRef(onLook);
   const onTapBreakRef = useRef(onTapBreak);
   const onTapPlaceRef = useRef(onTapPlace);
@@ -221,64 +219,76 @@ function LookPad({
   });
 
   useEffect(() => {
-    const onMoveEvt = (e: PointerEvent) => {
-      if (touchId.current !== e.pointerId) return;
-      e.preventDefault();
-      const dx = e.clientX - last.current.x;
-      const dy = e.clientY - last.current.y;
-      last.current = { x: e.clientX, y: e.clientY };
-      moved.current += Math.abs(dx) + Math.abs(dy);
-      onLookRef.current(dx, dy);
-    };
-    const onUpEvt = (e: PointerEvent) => {
-      if (touchId.current !== e.pointerId) return;
-      touchId.current = null;
-      const dt = performance.now() - startTime.current;
-      // quick tap without much movement → action
-      if (moved.current < 12 && dt < 300) {
-        const now = performance.now();
-        if (now - lastTap.current < 350) {
-          // double tap → place
-          onTapPlaceRef.current();
-          lastTap.current = 0;
-        } else {
-          // single tap → break
-          onTapBreakRef.current();
-          lastTap.current = now;
+    const onStart = (e: TouchEvent) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        // Only handle touches on the right 55%
+        if (t.clientX > window.innerWidth * 0.45 && touchId.current === null) {
+          touchId.current = t.identifier;
+          last.current = { x: t.clientX, y: t.clientY };
+          startTime.current = performance.now();
+          moved.current = 0;
         }
       }
     };
-    window.addEventListener("pointermove", onMoveEvt, { passive: false });
-    window.addEventListener("pointerup", onUpEvt);
-    window.addEventListener("pointercancel", onUpEvt);
-    return () => {
-      window.removeEventListener("pointermove", onMoveEvt);
-      window.removeEventListener("pointerup", onUpEvt);
-      window.removeEventListener("pointercancel", onUpEvt);
+    const onMove = (e: TouchEvent) => {
+      for (let i = 0; i < e.touches.length; i++) {
+        const t = e.touches[i];
+        if (t.identifier === touchId.current) {
+          e.preventDefault();
+          const dx = t.clientX - last.current.x;
+          const dy = t.clientY - last.current.y;
+          last.current = { x: t.clientX, y: t.clientY };
+          moved.current += Math.abs(dx) + Math.abs(dy);
+          onLookRef.current(dx, dy);
+          break;
+        }
+      }
     };
-    // EMPTY deps — listeners added once, never churn
-  }, []);
-
-  const start = useCallback((e: React.PointerEvent) => {
-    if (touchId.current !== null) return;
-    e.preventDefault();
-    touchId.current = e.pointerId;
-    last.current = { x: e.clientX, y: e.clientY };
-    startTime.current = performance.now();
-    startPos.current = { x: e.clientX, y: e.clientY };
-    moved.current = 0;
+    const onEnd = (e: TouchEvent) => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier === touchId.current) {
+          touchId.current = null;
+          const dt = performance.now() - startTime.current;
+          // Quick tap without much movement → action
+          if (moved.current < 15 && dt < 350) {
+            const now = performance.now();
+            if (now - lastTap.current < 400) {
+              // Double tap → place
+              onTapPlaceRef.current();
+              lastTap.current = 0;
+            } else {
+              // Single tap → break
+              onTapBreakRef.current();
+              lastTap.current = now;
+            }
+          }
+          break;
+        }
+      }
+    };
+    window.addEventListener("touchstart", onStart, { passive: true });
+    window.addEventListener("touchmove", onMove, { passive: false });
+    window.addEventListener("touchend", onEnd, { passive: true });
+    window.addEventListener("touchcancel", onEnd, { passive: true });
+    return () => {
+      window.removeEventListener("touchstart", onStart);
+      window.removeEventListener("touchmove", onMove);
+      window.removeEventListener("touchend", onEnd);
+      window.removeEventListener("touchcancel", onEnd);
+    };
   }, []);
 
   return (
     <div
-      onPointerDown={start}
       className="pointer-events-auto absolute bottom-0 right-0 top-0"
       style={{ width: "55%", touchAction: "none" }}
     />
   );
 }
 
-// Touch-friendly hotbar
+// Touch hotbar with ACTUAL BLOCK ICONS
 function TouchHotbar({
   hotbar,
   selectedSlot,
@@ -290,7 +300,7 @@ function TouchHotbar({
 }) {
   return (
     <div className="pointer-events-auto absolute bottom-2 left-1/2 -translate-x-1/2">
-      <div className="flex gap-1 rounded-lg border-2 border-black/50 bg-black/50 p-1 backdrop-blur">
+      <div className="flex gap-1 rounded-lg border-2 border-black/50 bg-black/60 p-1 backdrop-blur">
         {hotbar.map((blockId, i) => (
           <button
             key={i}
@@ -298,20 +308,44 @@ function TouchHotbar({
               e.preventDefault();
               onSelect(i);
             }}
-            className={`relative h-11 w-11 rounded-md border-2 transition active:scale-90 ${
+            className={`relative h-11 w-11 overflow-hidden rounded-md border-2 transition active:scale-90 ${
               i === selectedSlot
                 ? "border-white bg-white/20"
                 : "border-white/15 bg-black/40"
             }`}
             style={{ touchAction: "none" }}
           >
-            <span className="absolute bottom-0 right-0.5 font-mono text-[8px] text-white/60">
+            <HotbarBlockIcon blockId={blockId} />
+            <span className="absolute bottom-0 right-0.5 font-mono text-[8px] text-white/70">
               {i + 1}
             </span>
           </button>
         ))}
       </div>
     </div>
+  );
+}
+
+function HotbarBlockIcon({ blockId }: { blockId: number }) {
+  const src = useMemo(() => {
+    try { return makeBlockIcon(blockId, 48); } catch { return ""; }
+  }, [blockId]);
+  if (!src) {
+    return (
+      <div
+        className="absolute inset-1 rounded"
+        style={{ background: BLOCKS[blockId]?.color ?? "#888" }}
+      />
+    );
+  }
+  return (
+    <img
+      src={src}
+      alt=""
+      className="pointer-events-none absolute inset-0 m-auto"
+      style={{ width: 40, height: 40, imageRendering: "pixelated" }}
+      draggable={false}
+    />
   );
 }
 
@@ -329,25 +363,32 @@ function TouchBtn({
   className?: string;
 }) {
   const [active, setActive] = useState(false);
+  const activeRef = useRef(false);
   return (
     <button
       onPointerDown={(e) => {
         e.preventDefault();
+        activeRef.current = true;
         setActive(true);
         onDown?.();
       }}
       onPointerUp={(e) => {
         e.preventDefault();
+        activeRef.current = false;
         setActive(false);
         onUp?.();
         onTap?.();
       }}
       onPointerCancel={() => {
-        setActive(false);
-        onUp?.();
+        if (activeRef.current) {
+          activeRef.current = false;
+          setActive(false);
+          onUp?.();
+        }
       }}
       onPointerLeave={() => {
-        if (active) {
+        if (activeRef.current) {
+          activeRef.current = false;
           setActive(false);
           onUp?.();
         }
@@ -355,7 +396,7 @@ function TouchBtn({
       className={`flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-white/30 font-bold text-white shadow-lg backdrop-blur transition active:scale-90 ${
         active ? "scale-90 bg-white/40" : ""
       } ${className}`}
-      style={{ touchAction: "none", userSelect: "none" }}
+      style={{ touchAction: "none", userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
     >
       {label}
     </button>
