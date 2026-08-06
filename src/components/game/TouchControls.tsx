@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-// Touch controls for phones & iPads — proper multi-touch via window listeners.
-// No setPointerCapture (it breaks multi-touch). Each zone tracks its own pointerId.
+// Touch controls for phones & iPads.
+// Uses refs inside effects so window listeners never churn on parent re-render.
 export function TouchControls({
   onMove,
   onLook,
@@ -59,7 +59,7 @@ export function TouchControls({
           />
         </div>
       </div>
-      {/* Jump + Sprint */}
+      {/* Jump (ascend) + Sprint + Descend — left of actions */}
       <div className="pointer-events-auto absolute bottom-[100px] right-[162px] flex flex-col gap-2">
         <TouchBtn
           label="⇪"
@@ -74,6 +74,15 @@ export function TouchControls({
           className="bg-indigo-700/90 h-[68px] w-[68px] text-2xl"
         />
       </div>
+      {/* Descend button — below jump, for fly mode */}
+      <div className="pointer-events-auto absolute bottom-[100px] right-[232px]">
+        <TouchBtn
+          label="▼"
+          onDown={() => onSneak(true)}
+          onUp={() => onSneak(false)}
+          className="bg-purple-700/90 h-[50px] w-[50px] text-xl"
+        />
+      </div>
       {/* Touch hotbar */}
       <TouchHotbar
         hotbar={hotbar}
@@ -84,38 +93,38 @@ export function TouchControls({
   );
 }
 
-// Dynamic joystick — listens on window for move/up so multi-touch works.
+// Dynamic joystick — uses refs so window listeners are added ONCE.
 function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void }) {
   const [base, setBase] = useState<{ x: number; y: number } | null>(null);
   const [knob, setKnob] = useState({ x: 0, y: 0 });
   const touchId = useRef<number | null>(null);
   const baseRef = useRef<{ x: number; y: number } | null>(null);
+  const onMoveRef = useRef(onMove);
+  useEffect(() => {
+    onMoveRef.current = onMove;
+  });
   const RADIUS = 60;
 
-  const updateKnob = useCallback(
-    (cx: number, cy: number) => {
-      const b = baseRef.current;
-      if (!b) return;
-      let dx = cx - b.x;
-      let dy = cy - b.y;
-      const len = Math.hypot(dx, dy);
-      // dead zone in center
-      if (len < 8) {
-        setKnob({ x: 0, y: 0 });
-        onMove(0, 0);
-        return;
-      }
-      if (len > RADIUS) {
-        dx = (dx / len) * RADIUS;
-        dy = (dy / len) * RADIUS;
-      }
-      setKnob({ x: dx, y: dy });
-      onMove(dx / RADIUS, -dy / RADIUS);
-    },
-    [onMove]
-  );
+  const updateKnob = useCallback((cx: number, cy: number) => {
+    const b = baseRef.current;
+    if (!b) return;
+    let dx = cx - b.x;
+    let dy = cy - b.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 8) {
+      setKnob({ x: 0, y: 0 });
+      onMoveRef.current(0, 0);
+      return;
+    }
+    if (len > RADIUS) {
+      dx = (dx / len) * RADIUS;
+      dy = (dy / len) * RADIUS;
+    }
+    setKnob({ x: dx, y: dy });
+    onMoveRef.current(dx / RADIUS, -dy / RADIUS);
+  }, []);
 
-  // Window listeners for move/up — allows multi-touch (joystick + look simultaneous)
+  // Window listeners added ONCE (empty deps) — uses refs for callbacks
   useEffect(() => {
     const onMoveEvt = (e: PointerEvent) => {
       if (touchId.current !== e.pointerId) return;
@@ -128,7 +137,7 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
       baseRef.current = null;
       setBase(null);
       setKnob({ x: 0, y: 0 });
-      onMove(0, 0);
+      onMoveRef.current(0, 0);
     };
     window.addEventListener("pointermove", onMoveEvt, { passive: false });
     window.addEventListener("pointerup", onUpEvt);
@@ -138,13 +147,12 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
       window.removeEventListener("pointerup", onUpEvt);
       window.removeEventListener("pointercancel", onUpEvt);
     };
-  }, [updateKnob, onMove]);
+  }, [updateKnob]);
 
   const start = useCallback(
     (e: React.PointerEvent) => {
-      // Only respond on left 45% of screen
       if (e.clientX > window.innerWidth * 0.45) return;
-      if (touchId.current !== null) return; // already tracking a finger
+      if (touchId.current !== null) return;
       e.preventDefault();
       touchId.current = e.pointerId;
       baseRef.current = { x: e.clientX, y: e.clientY };
@@ -186,7 +194,7 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
   );
 }
 
-// Look pad — right 55%. Window listeners for multi-touch.
+// Look pad — uses refs so window listeners are added ONCE (no churn).
 function LookPad({
   onLook,
   onTapBreak,
@@ -202,6 +210,15 @@ function LookPad({
   const startPos = useRef({ x: 0, y: 0 });
   const moved = useRef(0);
   const lastTap = useRef(0);
+  // refs to callbacks so the effect never re-runs
+  const onLookRef = useRef(onLook);
+  const onTapBreakRef = useRef(onTapBreak);
+  const onTapPlaceRef = useRef(onTapPlace);
+  useEffect(() => {
+    onLookRef.current = onLook;
+    onTapBreakRef.current = onTapBreak;
+    onTapPlaceRef.current = onTapPlace;
+  });
 
   useEffect(() => {
     const onMoveEvt = (e: PointerEvent) => {
@@ -211,7 +228,7 @@ function LookPad({
       const dy = e.clientY - last.current.y;
       last.current = { x: e.clientX, y: e.clientY };
       moved.current += Math.abs(dx) + Math.abs(dy);
-      onLook(dx, dy);
+      onLookRef.current(dx, dy);
     };
     const onUpEvt = (e: PointerEvent) => {
       if (touchId.current !== e.pointerId) return;
@@ -222,11 +239,11 @@ function LookPad({
         const now = performance.now();
         if (now - lastTap.current < 350) {
           // double tap → place
-          onTapPlace();
+          onTapPlaceRef.current();
           lastTap.current = 0;
         } else {
           // single tap → break
-          onTapBreak();
+          onTapBreakRef.current();
           lastTap.current = now;
         }
       }
@@ -239,10 +256,11 @@ function LookPad({
       window.removeEventListener("pointerup", onUpEvt);
       window.removeEventListener("pointercancel", onUpEvt);
     };
-  }, [onLook, onTapBreak, onTapPlace]);
+    // EMPTY deps — listeners added once, never churn
+  }, []);
 
   const start = useCallback((e: React.PointerEvent) => {
-    if (touchId.current !== null) return; // already tracking
+    if (touchId.current !== null) return;
     e.preventDefault();
     touchId.current = e.pointerId;
     last.current = { x: e.clientX, y: e.clientY };

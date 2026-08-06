@@ -803,7 +803,7 @@ export class Engine {
     i.jump = this.keys.has("Space");
     i.sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
     i.sneak = this.keys.has("ControlLeft") || this.keys.has("ControlRight");
-    // touch joystick merge (analog: treat >0.3 as pressed)
+    // touch joystick merge (analog: treat >0.15 as pressed)
     const t = this.touchInput;
     if (Math.abs(t.moveY) > 0.15) {
       if (t.moveY > 0) i.forward = true;
