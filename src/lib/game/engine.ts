@@ -870,6 +870,15 @@ export class Engine {
     this.camera.updateProjectionMatrix();
   }
 
+  // Public for touch tap gestures (one-shot, not continuous)
+  breakBlock() {
+    this.tryBreak();
+  }
+
+  placeBlock() {
+    this.tryPlace();
+  }
+
   private tryBreak() {
     const hit = this.player.raycast(REACH_DISTANCE);
     if (!hit) return;

@@ -6,69 +6,90 @@ import { useCallback, useEffect, useRef, useState } from "react";
 // - Dynamic joystick: appears wherever you touch on the left half.
 // - Look pad: right half, drag to look, tap to break, double-tap to place.
 // - Action buttons: bottom-right, large touch targets.
+// - Touch hotbar: tap slots to select.
 export function TouchControls({
   onMove,
   onLook,
   onJump,
   onSprint,
   onSneak,
-  onBreak,
+  onBreakStart,
+  onBreakEnd,
+  onTapBreak,
   onPlace,
   onFly,
   onInventory,
+  hotbar,
+  selectedSlot,
+  onSelectSlot,
 }: {
   onMove: (x: number, y: number) => void;
   onLook: (dx: number, dy: number) => void;
   onJump: (down: boolean) => void;
   onSprint: (down: boolean) => void;
   onSneak: (down: boolean) => void;
-  onBreak: (down: boolean) => void;
-  onPlace: (down: boolean) => void;
+  onBreakStart: () => void;
+  onBreakEnd: () => void;
+  onTapBreak: () => void;
+  onPlace: () => void;
   onFly: () => void;
   onInventory: () => void;
+  hotbar: number[];
+  selectedSlot: number;
+  onSelectSlot: (i: number) => void;
 }) {
   return (
     <div className="pointer-events-none absolute inset-0 z-20 select-none">
       <DynamicJoystick onMove={onMove} />
-      <LookPad onLook={onLook} onBreak={onBreak} onPlace={onPlace} />
-      {/* Action buttons — bottom right, large for thumbs */}
-      <div className="pointer-events-auto absolute bottom-[88px] right-4 flex flex-col gap-2.5">
-        <div className="flex gap-2.5">
-          <TouchBtn label="🎒" onTap={onInventory} className="bg-slate-700/80" />
-          <TouchBtn label="✈" onTap={onFly} className="bg-amber-600/80" />
+      <LookPad
+        onLook={onLook}
+        onTapBreak={onTapBreak}
+        onTapPlace={onPlace}
+      />
+      {/* Action buttons — right side, large for thumbs */}
+      <div className="pointer-events-auto absolute bottom-[96px] right-3 flex flex-col gap-2">
+        <div className="flex gap-2">
+          <TouchBtn label="🎒" onTap={onInventory} className="bg-slate-700/85" />
+          <TouchBtn label="✈" onTap={onFly} className="bg-amber-600/85" />
         </div>
-        <div className="flex gap-2.5">
+        <div className="flex gap-2">
           <TouchBtn
             label="⛏"
-            onDown={onBreak}
-            className="bg-red-700/85 h-[68px] w-[68px] text-3xl"
+            onDown={onBreakStart}
+            onUp={onBreakEnd}
+            className="bg-red-700/90 h-[68px] w-[68px] text-3xl"
           />
           <TouchBtn
             label="▦"
-            onDown={onPlace}
-            className="bg-emerald-700/85 h-[68px] w-[68px] text-3xl"
+            onTap={onPlace}
+            className="bg-emerald-700/90 h-[68px] w-[68px] text-3xl"
           />
         </div>
       </div>
-      {/* Jump + Sprint — bottom right, above actions */}
-      <div className="pointer-events-auto absolute bottom-[88px] right-[160px] flex flex-col gap-2.5">
+      {/* Jump + Sprint — left of actions */}
+      <div className="pointer-events-auto absolute bottom-[96px] right-[162px] flex flex-col gap-2">
         <TouchBtn
           label="⇪"
           onDown={onSprint}
-          className="bg-cyan-700/80 h-[50px] w-[50px] text-xl"
+          className="bg-cyan-700/85 h-[50px] w-[50px] text-xl"
         />
         <TouchBtn
           label="▲"
           onDown={onJump}
-          className="bg-indigo-700/85 h-[68px] w-[68px] text-2xl"
+          className="bg-indigo-700/90 h-[68px] w-[68px] text-2xl"
         />
       </div>
+      {/* Touch hotbar — centered bottom, tappable */}
+      <TouchHotbar
+        hotbar={hotbar}
+        selectedSlot={selectedSlot}
+        onSelect={onSelectSlot}
+      />
     </div>
   );
 }
 
 // Dynamic joystick: appears wherever the player touches on the left 45% of screen.
-// The base stays fixed for the duration of the touch, then disappears on release.
 function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void }) {
   const [base, setBase] = useState<{ x: number; y: number } | null>(null);
   const [knob, setKnob] = useState({ x: 0, y: 0 });
@@ -95,7 +116,6 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
 
   const start = useCallback(
     (e: React.PointerEvent) => {
-      // Only respond on the left 45% of the screen
       if (e.clientX > window.innerWidth * 0.45) return;
       if (touchId.current !== null) return;
       touchId.current = e.pointerId;
@@ -163,15 +183,15 @@ function DynamicJoystick({ onMove }: { onMove: (x: number, y: number) => void })
 }
 
 // Look pad: right 55% of screen. Drag to look, tap (quick touch) to break,
-// double-tap to place.
+// double-tap to place. Uses direct callbacks for one-shot actions.
 function LookPad({
   onLook,
-  onBreak,
-  onPlace,
+  onTapBreak,
+  onTapPlace,
 }: {
   onLook: (dx: number, dy: number) => void;
-  onBreak: (down: boolean) => void;
-  onPlace: (down: boolean) => void;
+  onTapBreak: () => void;
+  onTapPlace: () => void;
 }) {
   const last = useRef({ x: 0, y: 0 });
   const touchId = useRef<number | null>(null);
@@ -207,23 +227,21 @@ function LookPad({
       if (touchId.current !== e.pointerId) return;
       touchId.current = null;
       const dt = performance.now() - startTime.current;
-      // quick tap without much movement → break block
-      if (moved.current < 8 && dt < 250) {
+      // quick tap without much movement → action
+      if (moved.current < 10 && dt < 280) {
         const now = performance.now();
-        if (now - lastTap.current < 300) {
+        if (now - lastTap.current < 320) {
           // double tap → place
-          onPlace(true);
-          setTimeout(() => onPlace(false), 50);
+          onTapPlace();
           lastTap.current = 0;
         } else {
-          // single tap → break
-          onBreak(true);
-          setTimeout(() => onBreak(false), 50);
+          // single tap → break (immediate one-shot)
+          onTapBreak();
           lastTap.current = now;
         }
       }
     },
-    [onBreak, onPlace]
+    [onTapBreak, onTapPlace]
   );
 
   return (
@@ -238,14 +256,49 @@ function LookPad({
   );
 }
 
+// Touch-friendly hotbar: centered at bottom, tappable slots.
+function TouchHotbar({
+  hotbar,
+  selectedSlot,
+  onSelect,
+}: {
+  hotbar: number[];
+  selectedSlot: number;
+  onSelect: (i: number) => void;
+}) {
+  return (
+    <div className="pointer-events-auto absolute bottom-2 left-1/2 -translate-x-1/2">
+      <div className="flex gap-1 rounded-lg border-2 border-black/50 bg-black/50 p-1 backdrop-blur">
+        {hotbar.map((blockId, i) => (
+          <button
+            key={i}
+            onPointerDown={(e) => {
+              e.preventDefault();
+              onSelect(i);
+            }}
+            className={`relative h-11 w-11 rounded-md border-2 transition active:scale-90 ${
+              i === selectedSlot
+                ? "border-white bg-white/20"
+                : "border-white/15 bg-black/40"
+            }`}
+            style={{ touchAction: "none" }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function TouchBtn({
   label,
   onDown,
+  onUp,
   onTap,
   className = "",
 }: {
   label: string;
-  onDown?: (down: boolean) => void;
+  onDown?: () => void;
+  onUp?: () => void;
   onTap?: () => void;
   className?: string;
 }) {
@@ -255,22 +308,22 @@ function TouchBtn({
       onPointerDown={(e) => {
         e.preventDefault();
         setActive(true);
-        onDown?.(true);
+        onDown?.();
       }}
       onPointerUp={(e) => {
         e.preventDefault();
         setActive(false);
-        onDown?.(false);
+        onUp?.();
         onTap?.();
       }}
       onPointerCancel={() => {
         setActive(false);
-        onDown?.(false);
+        onUp?.();
       }}
       onPointerLeave={() => {
         if (active) {
           setActive(false);
-          onDown?.(false);
+          onUp?.();
         }
       }}
       className={`flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-white/30 font-bold text-white shadow-lg backdrop-blur transition active:scale-90 ${
@@ -302,18 +355,4 @@ export function useIsTouchDevice() {
     queueMicrotask(() => setIsTouch(r));
   }, []);
   return isTouch;
-}
-
-// Hook to detect small screens (phones)
-export function useIsMobile() {
-  const [isMobile, setIsMobile] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.innerWidth < 768;
-  });
-  useEffect(() => {
-    const onResize = () => setIsMobile(window.innerWidth < 768);
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
-  return isMobile;
 }

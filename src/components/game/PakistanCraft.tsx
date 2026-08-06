@@ -292,8 +292,10 @@ export default function PakistanCraft() {
               onJump={(d) => engineRef.current?.setTouchInput({ jump: d })}
               onSprint={(d) => engineRef.current?.setTouchInput({ sprint: d })}
               onSneak={(d) => engineRef.current?.setTouchInput({ sneak: d })}
-              onBreak={(d) => engineRef.current?.setTouchInput({ breakBtn: d })}
-              onPlace={(d) => engineRef.current?.setTouchInput({ placeBtn: d })}
+              onBreakStart={() => engineRef.current?.setTouchInput({ breakBtn: true })}
+              onBreakEnd={() => engineRef.current?.setTouchInput({ breakBtn: false })}
+              onTapBreak={() => engineRef.current?.breakBlock()}
+              onPlace={() => engineRef.current?.placeBlock()}
               onFly={() => {
                 const eng = engineRef.current;
                 if (!eng) return;
@@ -308,6 +310,9 @@ export default function PakistanCraft() {
                   if (document.pointerLockElement) document.exitPointerLock();
                 }
               }}
+              hotbar={hud.hotbar}
+              selectedSlot={hud.selectedSlot}
+              onSelectSlot={(i) => engineRef.current?.setSelected(i)}
             />
           )}
           {paused && !showSettings && (
@@ -980,7 +985,7 @@ function Hud({ hud, isTouch }: { hud: HudState; isTouch: boolean }) {
             </div>
           </div>
         )}
-        <Hotbar hud={hud} />
+        {!isTouch && <Hotbar hud={hud} />}
       </div>
     </div>
   );
@@ -1092,13 +1097,13 @@ function Inventory({
         </div>
 
         <div className="max-h-[52vh] overflow-y-auto p-4">
-          <div className="grid grid-cols-6 gap-2 sm:grid-cols-8">
+          <div className="grid grid-cols-5 gap-2 sm:grid-cols-8">
             {CREATIVE_PALETTE.map((b) => (
               <button
                 key={b}
                 onClick={() => onPick(b)}
                 title={BLOCKS[b]?.name}
-                className="group relative flex aspect-square items-center justify-center rounded-md border border-white/10 bg-black/40 transition hover:border-amber-400 hover:bg-white/10"
+                className="group relative flex aspect-square items-center justify-center rounded-lg border border-white/10 bg-black/40 transition active:scale-95 hover:border-amber-400 hover:bg-white/10"
               >
                 <BlockIcon blockId={b} size={42} />
                 <span className="pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full whitespace-nowrap rounded bg-black/90 px-1.5 py-0.5 font-mono text-[10px] text-white opacity-0 transition group-hover:opacity-100">
