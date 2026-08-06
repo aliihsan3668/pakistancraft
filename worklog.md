@@ -202,3 +202,23 @@ Work Log:
 
 Stage Summary:
 - TNT with 3s fuse, 4-block-radius explosions, chain reactions, particle bursts, screen flash. Chunk gen capped at 1/frame for smoothness. Raycast fixed to use player state directly. Underwater overlay added. Live at pakistancraft.vercel.app.
+
+---
+Task ID: 9
+Agent: main (Z.ai Code)
+Task: Refine touch controls for phones/iPads, make smoother and faster.
+
+Work Log:
+- **Dynamic joystick** (`TouchControls.tsx`): Replaced the fixed-position joystick with a dynamic one that appears wherever the player touches on the left 45% of the screen. The base stays fixed for the duration of the touch, then disappears on release. Larger radius (60px) with a 52px knob for better thumb ergonomics.
+- **Tap-to-break / double-tap-to-place** (`TouchControls.tsx`): The look pad (right 55% of screen) now detects taps: a quick single tap breaks the targeted block, a double-tap places the selected block. This is the most intuitive touch interaction for voxel games.
+- **Redesigned action buttons** (`TouchControls.tsx`): Larger 68×68px break/place buttons with emoji icons (⛏ ▦), 50px sprint button, 68px jump button, plus inventory (🎒) and fly (✈) buttons. Rounded-2xl with shadow-lg for better touch visibility. Active scale-90 feedback.
+- **Mobile-responsive HUD** (`PakistanCraft.tsx`): Top-left info panel uses smaller text (10px) and tighter padding on mobile, scaling up to 11px on sm+ screens. Hotbar slots are 44px on mobile, 48px on desktop. Top-right hint and drag-mode hint hidden on touch devices (touch has its own buttons). Minimap hidden on mobile (`hidden sm:block`).
+- **Auto mobile performance** (`engine.ts`): Detects mobile devices (touch + coarse pointer) and automatically reduces render distance to max 4 and caps pixel ratio to 1.0 (vs 1.5 on desktop) for better FPS on phones/iPads.
+- **Viewport meta** (`layout.tsx`): Added `viewport` export with `width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover` to prevent pinch-zoom and double-tap zoom on mobile. Added `overscroll-none` and `touch-action: none` on body to prevent scroll bounce.
+- **Higher touch look sensitivity** (`engine.ts`): Increased touch look sensitivity from 0.004 to 0.006 for more responsive camera control on touch screens.
+- **Inventory button on touch** (`TouchControls.tsx` + `PakistanCraft.tsx`): Added a 🎒 inventory button to the touch controls that opens the inventory and disables game input.
+- Verified on iPhone 14 viewport (390×844): viewport meta correct, game loads with 0 errors, HUD readable on mobile. VLM rated mobile readability 7/10.
+- Pushed to GitHub, deployed to Vercel.
+
+Stage Summary:
+- Dynamic joystick (appears on touch), tap-to-break + double-tap-to-place gestures, larger action buttons, mobile-responsive HUD (smaller panels, hidden minimap/hints on mobile), auto mobile render distance + pixel ratio reduction, viewport meta (no zoom), higher touch sensitivity. Live at pakistancraft.vercel.app.
