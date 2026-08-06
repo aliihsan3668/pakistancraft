@@ -298,10 +298,9 @@ export default function PakistanCraft() {
               onJump={(d) => engineRef.current?.setTouchInput({ jump: d })}
               onSprint={(d) => engineRef.current?.setTouchInput({ sprint: d })}
               onSneak={(d) => engineRef.current?.setTouchInput({ sneak: d })}
-              onBreakStart={() => engineRef.current?.setTouchInput({ breakBtn: true })}
-              onBreakEnd={() => engineRef.current?.setTouchInput({ breakBtn: false })}
-              onTapBreak={() => engineRef.current?.breakBlock()}
-              onPlace={() => engineRef.current?.placeBlock()}
+              onTapPlace={() => engineRef.current?.placeBlock()}
+              onHoldBreakStart={() => engineRef.current?.setTouchInput({ breakBtn: true })}
+              onHoldBreakEnd={() => engineRef.current?.setTouchInput({ breakBtn: false })}
               onFly={() => {
                 const eng = engineRef.current;
                 if (!eng) return;
@@ -319,6 +318,7 @@ export default function PakistanCraft() {
               hotbar={hud.hotbar}
               selectedSlot={hud.selectedSlot}
               onSelectSlot={(i) => engineRef.current?.setSelected(i)}
+              flying={hud.flying}
             />
           )}
           {paused && !showSettings && (

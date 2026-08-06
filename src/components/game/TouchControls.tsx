@@ -4,87 +4,80 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BLOCKS } from "@/lib/game/blocks";
 import { makeBlockIcon } from "@/lib/game/icons";
 
-// Touch controls using NATIVE touch events for maximum iOS Safari compatibility.
-// Pointer events are unreliable on older iOS Safari — touchstart/touchmove/touchend work everywhere.
+// Minecraft PE-style touch controls.
+// Left half: movement joystick (appears where you touch).
+// Right half: look (drag), tap to PLACE, hold to BREAK.
+// Bottom center: hotbar (tap to select).
+// Right side: jump + fly up/down buttons.
 export function TouchControls({
   onMove,
   onLook,
   onJump,
   onSprint,
   onSneak,
-  onBreakStart,
-  onBreakEnd,
-  onTapBreak,
-  onPlace,
+  onTapPlace,
+  onHoldBreakStart,
+  onHoldBreakEnd,
   onFly,
   onInventory,
   hotbar,
   selectedSlot,
   onSelectSlot,
+  flying,
 }: {
   onMove: (x: number, y: number) => void;
   onLook: (dx: number, dy: number) => void;
   onJump: (down: boolean) => void;
   onSprint: (down: boolean) => void;
   onSneak: (down: boolean) => void;
-  onBreakStart: () => void;
-  onBreakEnd: () => void;
-  onTapBreak: () => void;
-  onPlace: () => void;
+  onTapPlace: () => void;
+  onHoldBreakStart: () => void;
+  onHoldBreakEnd: () => void;
   onFly: () => void;
   onInventory: () => void;
   hotbar: number[];
   selectedSlot: number;
   onSelectSlot: (i: number) => void;
+  flying: boolean;
 }) {
   return (
-    <div className="pointer-events-none absolute inset-0 z-20 select-none">
-      <TouchMoveZone onMove={onMove} />
-      <TouchLookZone onLook={onLook} onTapBreak={onTapBreak} onTapPlace={onPlace} />
-      {/* Action buttons */}
-      <div className="pointer-events-auto absolute bottom-[100px] right-3 flex flex-col gap-2">
-        <div className="flex gap-2">
-          <TouchBtn label="🎒" onTap={onInventory} className="bg-slate-700/85" />
-          <TouchBtn label="✈" onTap={onFly} className="bg-amber-600/85" />
-        </div>
-        <div className="flex gap-2">
-          <TouchBtn
-            label="⛏"
-            onDown={onBreakStart}
-            onUp={onBreakEnd}
-            className="bg-red-700/90 h-[68px] w-[68px] text-3xl"
-          />
-          <TouchBtn
-            label="▦"
-            onTap={onPlace}
-            className="bg-emerald-700/90 h-[68px] w-[68px] text-3xl"
-          />
-        </div>
-      </div>
-      {/* Jump + Sprint + Descend */}
-      <div className="pointer-events-auto absolute bottom-[100px] right-[162px] flex flex-col gap-2">
-        <TouchBtn
-          label="⇪"
-          onDown={() => onSprint(true)}
-          onUp={() => onSprint(false)}
-          className="bg-cyan-700/85 h-[50px] w-[50px] text-xl"
-        />
-        <TouchBtn
+    <div
+      className="absolute inset-0 z-20 select-none"
+      style={{ touchAction: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
+    >
+      <MoveJoystick onMove={onMove} />
+      <LookBreakPlaceZone
+        onLook={onLook}
+        onTapPlace={onTapPlace}
+        onHoldBreakStart={onHoldBreakStart}
+        onHoldBreakEnd={onHoldBreakEnd}
+      />
+      {/* Jump / Fly up button */}
+      <div className="absolute bottom-[88px] right-3 z-30">
+        <HoldBtn
           label="▲"
           onDown={() => onJump(true)}
           onUp={() => onJump(false)}
-          className="bg-indigo-700/90 h-[68px] w-[68px] text-2xl"
+          className="bg-indigo-700/90 h-[64px] w-[64px] text-2xl"
         />
       </div>
-      <div className="pointer-events-auto absolute bottom-[100px] right-[232px]">
-        <TouchBtn
-          label="▼"
-          onDown={() => onSneak(true)}
-          onUp={() => onSneak(false)}
-          className="bg-purple-700/90 h-[50px] w-[50px] text-xl"
-        />
+      {/* Fly down button (only when flying) */}
+      {flying && (
+        <div className="absolute bottom-[88px] right-[78px] z-30">
+          <HoldBtn
+            label="▼"
+            onDown={() => onSneak(true)}
+            onUp={() => onSneak(false)}
+            className="bg-purple-700/90 h-[64px] w-[64px] text-2xl"
+          />
+        </div>
+      )}
+      {/* Inventory + Fly toggle (top right) */}
+      <div className="absolute right-3 top-14 z-30 flex gap-2">
+        <TapBtn label="🎒" onTap={onInventory} className="bg-slate-700/85" />
+        <TapBtn label="✈" onTap={onFly} className="bg-amber-600/85" />
       </div>
-      {/* Touch hotbar with block icons */}
+      {/* Touch hotbar */}
       <TouchHotbar
         hotbar={hotbar}
         selectedSlot={selectedSlot}
@@ -94,23 +87,23 @@ export function TouchControls({
   );
 }
 
-// Movement zone (left 45%) — uses native touch events
-function TouchMoveZone({ onMove }: { onMove: (x: number, y: number) => void }) {
+// Movement joystick — left half of screen. Appears where you touch.
+function MoveJoystick({ onMove }: { onMove: (x: number, y: number) => void }) {
   const [base, setBase] = useState<{ x: number; y: number } | null>(null);
   const [knob, setKnob] = useState({ x: 0, y: 0 });
   const touchId = useRef<number | null>(null);
   const baseRef = useRef<{ x: number; y: number } | null>(null);
   const onMoveRef = useRef(onMove);
   useEffect(() => { onMoveRef.current = onMove; });
-  const RADIUS = 60;
+  const RADIUS = 55;
 
-  const updateKnob = useCallback((cx: number, cy: number) => {
+  const update = useCallback((cx: number, cy: number) => {
     const b = baseRef.current;
     if (!b) return;
     let dx = cx - b.x;
     let dy = cy - b.y;
     const len = Math.hypot(dx, dy);
-    if (len < 8) {
+    if (len < 10) {
       setKnob({ x: 0, y: 0 });
       onMoveRef.current(0, 0);
       return;
@@ -123,59 +116,49 @@ function TouchMoveZone({ onMove }: { onMove: (x: number, y: number) => void }) {
     onMoveRef.current(dx / RADIUS, -dy / RADIUS);
   }, []);
 
-  useEffect(() => {
-    const zone = (e: TouchEvent) => {
-      // Only handle touches that start on the left 45%
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        if (t.clientX <= window.innerWidth * 0.45) {
-          if (e.type === "touchstart" && touchId.current === null) {
-            touchId.current = t.identifier;
-            baseRef.current = { x: t.clientX, y: t.clientY };
-            setBase({ x: t.clientX, y: t.clientY });
-            updateKnob(t.clientX, t.clientY);
-          }
-        }
+  const onTouchStart = useCallback((e: React.TouchEvent) => {
+    if (touchId.current !== null) return;
+    const t = e.changedTouches[0];
+    if (t.clientX > window.innerWidth * 0.45) return; // only left half
+    e.preventDefault();
+    touchId.current = t.identifier;
+    baseRef.current = { x: t.clientX, y: t.clientY };
+    setBase({ x: t.clientX, y: t.clientY });
+    update(t.clientX, t.clientY);
+  }, [update]);
+
+  const onTouchMove = useCallback((e: React.TouchEvent) => {
+    for (let i = 0; i < e.touches.length; i++) {
+      const t = e.touches[i];
+      if (t.identifier === touchId.current) {
+        e.preventDefault();
+        update(t.clientX, t.clientY);
+        break;
       }
-    };
-    const onMove = (e: TouchEvent) => {
-      for (let i = 0; i < e.touches.length; i++) {
-        const t = e.touches[i];
-        if (t.identifier === touchId.current) {
-          e.preventDefault();
-          updateKnob(t.clientX, t.clientY);
-          break;
-        }
+    }
+  }, [update]);
+
+  const onTouchEnd = useCallback((e: React.TouchEvent) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier === touchId.current) {
+        touchId.current = null;
+        baseRef.current = null;
+        setBase(null);
+        setKnob({ x: 0, y: 0 });
+        onMoveRef.current(0, 0);
+        break;
       }
-    };
-    const onEnd = (e: TouchEvent) => {
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        if (t.identifier === touchId.current) {
-          touchId.current = null;
-          baseRef.current = null;
-          setBase(null);
-          setKnob({ x: 0, y: 0 });
-          onMoveRef.current(0, 0);
-          break;
-        }
-      }
-    };
-    window.addEventListener("touchstart", zone, { passive: true });
-    window.addEventListener("touchmove", onMove, { passive: false });
-    window.addEventListener("touchend", onEnd, { passive: true });
-    window.addEventListener("touchcancel", onEnd, { passive: true });
-    return () => {
-      window.removeEventListener("touchstart", zone);
-      window.removeEventListener("touchmove", onMove);
-      window.removeEventListener("touchend", onEnd);
-      window.removeEventListener("touchcancel", onEnd);
-    };
-  }, [updateKnob]);
+    }
+  }, []);
 
   return (
     <div
-      className="pointer-events-auto absolute bottom-0 left-0 top-0"
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+      className="absolute bottom-0 left-0 top-0"
       style={{ width: "45%", touchAction: "none" }}
     >
       {base && (
@@ -185,8 +168,8 @@ function TouchMoveZone({ onMove }: { onMove: (x: number, y: number) => void }) {
             style={{ left: base.x - RADIUS, top: base.y - RADIUS, width: RADIUS * 2, height: RADIUS * 2 }}
           />
           <div
-            className="pointer-events-none absolute rounded-full border-2 border-white/50 bg-white/30"
-            style={{ left: base.x - 26 + knob.x, top: base.y - 26 + knob.y, width: 52, height: 52 }}
+            className="pointer-events-none absolute rounded-full border-2 border-white/60 bg-white/40"
+            style={{ left: base.x - 24 + knob.x, top: base.y - 24 + knob.y, width: 48, height: 48 }}
           />
         </>
       )}
@@ -194,101 +177,118 @@ function TouchMoveZone({ onMove }: { onMove: (x: number, y: number) => void }) {
   );
 }
 
-// Look zone (right 55%) — uses native touch events
-function TouchLookZone({
+// Look + break + place zone — right 55% of screen.
+// Drag = look. Quick tap (< 250ms, < 15px move) = place. Hold (> 250ms, < 15px move) = break.
+function LookBreakPlaceZone({
   onLook,
-  onTapBreak,
   onTapPlace,
+  onHoldBreakStart,
+  onHoldBreakEnd,
 }: {
   onLook: (dx: number, dy: number) => void;
-  onTapBreak: () => void;
   onTapPlace: () => void;
+  onHoldBreakStart: () => void;
+  onHoldBreakEnd: () => void;
 }) {
   const touchId = useRef<number | null>(null);
   const last = useRef({ x: 0, y: 0 });
+  const start = useRef({ x: 0, y: 0 });
   const startTime = useRef(0);
   const moved = useRef(0);
-  const lastTap = useRef(0);
+  const isBreaking = useRef(false);
+  const holdTimer = useRef<number | null>(null);
   const onLookRef = useRef(onLook);
-  const onTapBreakRef = useRef(onTapBreak);
   const onTapPlaceRef = useRef(onTapPlace);
+  const onHoldBreakStartRef = useRef(onHoldBreakStart);
+  const onHoldBreakEndRef = useRef(onHoldBreakEnd);
   useEffect(() => {
     onLookRef.current = onLook;
-    onTapBreakRef.current = onTapBreak;
     onTapPlaceRef.current = onTapPlace;
+    onHoldBreakStartRef.current = onHoldBreakStart;
+    onHoldBreakEndRef.current = onHoldBreakEnd;
   });
 
-  useEffect(() => {
-    const onStart = (e: TouchEvent) => {
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        // Only handle touches on the right 55%
-        if (t.clientX > window.innerWidth * 0.45 && touchId.current === null) {
-          touchId.current = t.identifier;
-          last.current = { x: t.clientX, y: t.clientY };
-          startTime.current = performance.now();
-          moved.current = 0;
-        }
+  const onTouchStart = useCallback((e: React.TouchEvent) => {
+    if (touchId.current !== null) return;
+    const t = e.changedTouches[0];
+    if (t.clientX <= window.innerWidth * 0.45) return; // only right half
+    e.preventDefault();
+    touchId.current = t.identifier;
+    last.current = { x: t.clientX, y: t.clientY };
+    start.current = { x: t.clientX, y: t.clientY };
+    startTime.current = performance.now();
+    moved.current = 0;
+    isBreaking.current = false;
+    // After 250ms of holding without much movement, start breaking
+    holdTimer.current = window.setTimeout(() => {
+      if (touchId.current !== null && moved.current < 15) {
+        isBreaking.current = true;
+        onHoldBreakStartRef.current();
       }
-    };
-    const onMove = (e: TouchEvent) => {
-      for (let i = 0; i < e.touches.length; i++) {
-        const t = e.touches[i];
-        if (t.identifier === touchId.current) {
-          e.preventDefault();
-          const dx = t.clientX - last.current.x;
-          const dy = t.clientY - last.current.y;
-          last.current = { x: t.clientX, y: t.clientY };
-          moved.current += Math.abs(dx) + Math.abs(dy);
-          onLookRef.current(dx, dy);
-          break;
-        }
-      }
-    };
-    const onEnd = (e: TouchEvent) => {
-      for (let i = 0; i < e.changedTouches.length; i++) {
-        const t = e.changedTouches[i];
-        if (t.identifier === touchId.current) {
-          touchId.current = null;
-          const dt = performance.now() - startTime.current;
-          // Quick tap without much movement → action
-          if (moved.current < 15 && dt < 350) {
-            const now = performance.now();
-            if (now - lastTap.current < 400) {
-              // Double tap → place
-              onTapPlaceRef.current();
-              lastTap.current = 0;
-            } else {
-              // Single tap → break
-              onTapBreakRef.current();
-              lastTap.current = now;
-            }
+    }, 250);
+  }, []);
+
+  const onTouchMove = useCallback((e: React.TouchEvent) => {
+    for (let i = 0; i < e.touches.length; i++) {
+      const t = e.touches[i];
+      if (t.identifier === touchId.current) {
+        e.preventDefault();
+        const dx = t.clientX - last.current.x;
+        const dy = t.clientY - last.current.y;
+        last.current = { x: t.clientX, y: t.clientY };
+        moved.current += Math.abs(dx) + Math.abs(dy);
+        // If moved too much, cancel the hold-to-break timer
+        if (moved.current > 15 && holdTimer.current) {
+          clearTimeout(holdTimer.current);
+          holdTimer.current = null;
+          if (isBreaking.current) {
+            isBreaking.current = false;
+            onHoldBreakEndRef.current();
           }
-          break;
         }
+        onLookRef.current(dx, dy);
+        break;
       }
-    };
-    window.addEventListener("touchstart", onStart, { passive: true });
-    window.addEventListener("touchmove", onMove, { passive: false });
-    window.addEventListener("touchend", onEnd, { passive: true });
-    window.addEventListener("touchcancel", onEnd, { passive: true });
-    return () => {
-      window.removeEventListener("touchstart", onStart);
-      window.removeEventListener("touchmove", onMove);
-      window.removeEventListener("touchend", onEnd);
-      window.removeEventListener("touchcancel", onEnd);
-    };
+    }
+  }, []);
+
+  const onTouchEnd = useCallback((e: React.TouchEvent) => {
+    for (let i = 0; i < e.changedTouches.length; i++) {
+      const t = e.changedTouches[i];
+      if (t.identifier === touchId.current) {
+        touchId.current = null;
+        if (holdTimer.current) {
+          clearTimeout(holdTimer.current);
+          holdTimer.current = null;
+        }
+        if (isBreaking.current) {
+          isBreaking.current = false;
+          onHoldBreakEndRef.current();
+        } else {
+          // Quick tap without much movement → place block
+          const dt = performance.now() - startTime.current;
+          if (moved.current < 15 && dt < 250) {
+            onTapPlaceRef.current();
+          }
+        }
+        break;
+      }
+    }
   }, []);
 
   return (
     <div
-      className="pointer-events-auto absolute bottom-0 right-0 top-0"
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+      className="absolute bottom-0 right-0 top-0"
       style={{ width: "55%", touchAction: "none" }}
     />
   );
 }
 
-// Touch hotbar with ACTUAL BLOCK ICONS
+// Touch hotbar with block icons — always visible at bottom center
 function TouchHotbar({
   hotbar,
   selectedSlot,
@@ -299,24 +299,25 @@ function TouchHotbar({
   onSelect: (i: number) => void;
 }) {
   return (
-    <div className="pointer-events-auto absolute bottom-2 left-1/2 -translate-x-1/2">
-      <div className="flex gap-1 rounded-lg border-2 border-black/50 bg-black/60 p-1 backdrop-blur">
+    <div className="absolute bottom-2 left-1/2 z-30 -translate-x-1/2">
+      <div className="flex gap-1 rounded-lg border-2 border-black/60 bg-black/60 p-1 backdrop-blur">
         {hotbar.map((blockId, i) => (
           <button
             key={i}
-            onPointerDown={(e) => {
+            onTouchStart={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               onSelect(i);
             }}
-            className={`relative h-11 w-11 overflow-hidden rounded-md border-2 transition active:scale-90 ${
+            className={`relative h-12 w-12 overflow-hidden rounded-md border-2 transition active:scale-90 ${
               i === selectedSlot
-                ? "border-white bg-white/20"
-                : "border-white/15 bg-black/40"
+                ? "border-white bg-white/25"
+                : "border-white/20 bg-black/50"
             }`}
             style={{ touchAction: "none" }}
           >
             <HotbarBlockIcon blockId={blockId} />
-            <span className="absolute bottom-0 right-0.5 font-mono text-[8px] text-white/70">
+            <span className="absolute bottom-0 right-0.5 font-mono text-[8px] text-white/80">
               {i + 1}
             </span>
           </button>
@@ -332,10 +333,7 @@ function HotbarBlockIcon({ blockId }: { blockId: number }) {
   }, [blockId]);
   if (!src) {
     return (
-      <div
-        className="absolute inset-1 rounded"
-        style={{ background: BLOCKS[blockId]?.color ?? "#888" }}
-      />
+      <div className="absolute inset-1 rounded" style={{ background: BLOCKS[blockId]?.color ?? "#888" }} />
     );
   }
   return (
@@ -343,60 +341,80 @@ function HotbarBlockIcon({ blockId }: { blockId: number }) {
       src={src}
       alt=""
       className="pointer-events-none absolute inset-0 m-auto"
-      style={{ width: 40, height: 40, imageRendering: "pixelated" }}
+      style={{ width: 42, height: 42, imageRendering: "pixelated" }}
       draggable={false}
     />
   );
 }
 
-function TouchBtn({
+// Hold button (for jump, fly up/down)
+function HoldBtn({
   label,
   onDown,
   onUp,
-  onTap,
   className = "",
 }: {
   label: string;
-  onDown?: () => void;
-  onUp?: () => void;
-  onTap?: () => void;
+  onDown: () => void;
+  onUp: () => void;
   className?: string;
 }) {
   const [active, setActive] = useState(false);
   const activeRef = useRef(false);
   return (
     <button
-      onPointerDown={(e) => {
+      onTouchStart={(e) => {
         e.preventDefault();
+        e.stopPropagation();
         activeRef.current = true;
         setActive(true);
-        onDown?.();
+        onDown();
       }}
-      onPointerUp={(e) => {
+      onTouchEnd={(e) => {
         e.preventDefault();
-        activeRef.current = false;
-        setActive(false);
-        onUp?.();
-        onTap?.();
-      }}
-      onPointerCancel={() => {
+        e.stopPropagation();
         if (activeRef.current) {
           activeRef.current = false;
           setActive(false);
-          onUp?.();
+          onUp();
         }
       }}
-      onPointerLeave={() => {
+      onTouchCancel={() => {
         if (activeRef.current) {
           activeRef.current = false;
           setActive(false);
-          onUp?.();
+          onUp();
         }
       }}
-      className={`flex h-14 w-14 items-center justify-center rounded-2xl border-2 border-white/30 font-bold text-white shadow-lg backdrop-blur transition active:scale-90 ${
-        active ? "scale-90 bg-white/40" : ""
+      className={`flex h-14 w-14 items-center justify-center rounded-full border-2 border-white/40 font-bold text-white shadow-lg backdrop-blur transition active:scale-90 ${
+        active ? "scale-90 bg-white/50" : ""
       } ${className}`}
-      style={{ touchAction: "none", userSelect: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
+      style={{ touchAction: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
+    >
+      {label}
+    </button>
+  );
+}
+
+// Tap button (for inventory, fly toggle)
+function TapBtn({
+  label,
+  onTap,
+  className = "",
+}: {
+  label: string;
+  onTap: () => void;
+  className?: string;
+}) {
+  return (
+    <button
+      onTouchStart={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onTap();
+      }}
+      className={`flex h-12 w-12 items-center justify-center rounded-xl border-2 border-white/30 font-bold text-white shadow-lg backdrop-blur transition active:scale-90 ${className}`}
+      style={{ touchAction: "none", WebkitUserSelect: "none", WebkitTouchCallout: "none" }}
     >
       {label}
     </button>
