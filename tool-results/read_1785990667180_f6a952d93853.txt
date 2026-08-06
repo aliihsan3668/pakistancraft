@@ -1,0 +1,1338 @@
+     1→// PakistanCraft — main engine: Three.js setup, render loop, input, interaction,
+     2→// sky, particles, weather, settings, survival, save/load, explosions.
+     3→import * as THREE from "three";
+     4→import { World } from "./world";
+     5→import { Player } from "./player";
+     6→import { Block, BLOCKS, buildAtlasTexture } from "./blocks";
+     7→import { getBiome } from "./biomes";
+     8→import { Sky } from "./sky";
+     9→import { ParticleSystem } from "./particles";
+    10→import { ExplosionSystem } from "./explosions";
+    11→import {
+    12→  DEFAULT_SETTINGS,
+    13→  loadSettings,
+    14→  saveSettings,
+    15→  type Settings,
+    16→} from "./settings";
+    17→import {
+    18→  CHUNK_SIZE,
+    19→  RENDER_DISTANCE,
+    20→  REACH_DISTANCE,
+    21→  DAY_LENGTH,
+    22→  PLAYER_EYE,
+    23→  SEA_LEVEL,
+    24→} from "./constants";
+    25→
+    26→export interface HudState {
+    27→  health: number;
+    28→  maxHealth: number;
+    29→  hunger: number;
+    30→  maxHunger: number;
+    31→  x: number;
+    32→  y: number;
+    33→  z: number;
+    34→  biome: string;
+    35→  biomeUrdu: string;
+    36→  fps: number;
+    37→  timeOfDay: number;
+    38→  flying: boolean;
+    39→  pointerLocked: boolean;
+    40→  selectedBlock: number;
+    41→  selectedName: string;
+    42→  selectedSlot: number;
+    43→  hotbar: number[];
+    44→  onGround: boolean;
+    45→  inWater: boolean;
+    46→  yaw: number;
+    47→  heading: string; // N / NE / E / ...
+    48→  weather: "clear" | "rain";
+    49→  gameMode: "creative" | "survival";
+    50→  brightness: number;
+    51→  settings: Settings;
+    52→  raining: boolean;
+    53→  targetBlock: { x: number; y: number; z: number } | null;
+    54→  breakProgress: number;
+    55→  biomeId: number;
+    56→  flashTimer: number;
+    57→}
+    58→
+    59→export interface EngineCallbacks {
+    60→  onHud?: (s: HudState) => void;
+    61→  onReady?: () => void;
+    62→  onError?: (msg: string) => void;
+    63→}
+    64→
+    65→export interface EngineOptions extends EngineCallbacks {
+    66→  seed: number;
+    67→  settings?: Settings;
+    68→}
+    69→
+    70→// Default hotbar: a curated Pakistani palette
+    71→const DEFAULT_HOTBAR: number[] = [
+    72→  Block.GRASS,
+    73→  Block.DIRT,
+    74→  Block.STONE,
+    75→  Block.COBBLE,
+    76→  Block.LOG_NEEM,
+    77→  Block.PLANKS,
+    78→  Block.BRICK,
+    79→  Block.MARBLE,
+    80→  Block.GLASS,
+    81→];
+    82→
+    83→// Full creative palette (shown in inventory)
+    84→export const CREATIVE_PALETTE: number[] = [
+    85→  Block.GRASS,
+    86→  Block.DIRT,
+    87→  Block.SAND,
+    88→  Block.SANDSTONE,
+    89→  Block.STONE,
+    90→  Block.COBBLE,
+    91→  Block.SNOW,
+    92→  Block.ICE,
+    93→  Block.WATER,
+    94→  Block.LOG_NEEM,
+    95→  Block.PLANKS,
+    96→  Block.LEAVES,
+    97→  Block.LOG_PALM,
+    98→  Block.LEAVES_PALM,
+    99→  Block.LEAVES_MANGO,
+   100→  Block.BRICK,
+   101→  Block.MARBLE,
+   102→  Block.SANDSTONE_BRICK,
+   103→  Block.MUD_BRICK,
+   104→  Block.CACTUS,
+   105→  Block.WHEAT,
+   106→  Block.SUGARCANE,
+   107→  Block.LAMP,
+   108→  Block.GLASS,
+   109→  Block.IRON,
+   110→  Block.GOLD,
+   111→  Block.CARPET_GREEN,
+   112→  Block.CONCRETE,
+   113→  Block.ASPHALT,
+   114→  Block.GRASS_DRY,
+   115→  Block.CLAY,
+   116→  Block.SALT,
+   117→  Block.PUMPKIN,
+   118→  Block.POPPY,
+   119→  Block.TORCH,
+   120→  Block.ROOF_TILE,
+   121→  Block.MOSQUE_DOME,
+   122→  Block.RICE_CROP,
+   123→  Block.COTTON_CROP,
+   124→  Block.RED_SANDSTONE,
+   125→  Block.WHITE_DOME,
+   126→  Block.TILE_BLUE,
+   127→  Block.AWNING_RED,
+   128→  Block.AWNING_GREEN,
+   129→  Block.AWNING_YELLOW,
+   130→  Block.METAL_RAIL,
+   131→  Block.HEDGE,
+   132→  Block.FOUNTAIN,
+   133→  Block.LANTERN,
+   134→  Block.TNT,
+   135→];
+   136→
+   137→const SAVE_KEY = "pakistancraft.save";
+   138→
+   139→// Custom water shader: animated vertex waves + specular shimmer + flowing texture,
+   140→// respects vertex color (AO/directional shade) and fog.
+   141→function makeWaterMaterial(atlas: THREE.Texture): THREE.ShaderMaterial {
+   142→  return new THREE.ShaderMaterial({
+   143→    transparent: true,
+   144→    depthWrite: false,
+   145→    side: THREE.DoubleSide,
+   146→    fog: false, // we handle fog manually in the shader
+   147→    uniforms: {
+   148→      uAtlas: { value: atlas },
+   149→      uTime: { value: 0 },
+   150→      uFogColor: { value: new THREE.Color("#bcd8ee") },
+   151→      uFogNear: { value: 32 },
+   152→      uFogFar: { value: 72 },
+   153→      uOpacity: { value: 0.82 },
+   154→      uSunDir: { value: new THREE.Vector3(0, 1, 0) },
+   155→      uSunColor: { value: new THREE.Color("#fff0c0") },
+   156→    },
+   157→    vertexShader: /* glsl */ `
+   158→      attribute vec3 color;
+   159→      varying vec2 vUv;
+   160→      varying vec3 vColor;
+   161→      varying vec3 vWorldPos;
+   162→      varying float vFogDepth;
+   163→      varying float vIsTop;
+   164→      uniform float uTime;
+   165→      void main() {
+   166→        vUv = uv;
+   167→        vColor = color;
+   168→        vec3 pos = position;
+   169→        vIsTop = normal.y > 0.5 ? 1.0 : 0.0;
+   170→        // wave displacement on top faces
+   171→        if (vIsTop > 0.5) {
+   172→          float w = sin(pos.x * 0.8 + uTime * 1.5) * 0.05
+   173→                  + cos(pos.z * 0.6 + uTime * 1.2) * 0.05
+   174→                  + sin((pos.x + pos.z) * 0.4 + uTime * 0.8) * 0.03;
+   175→          pos.y += w;
+   176→        }
+   177→        vec4 worldPos = modelMatrix * vec4(pos, 1.0);
+   178→        vWorldPos = worldPos.xyz;
+   179→        vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+   180→        vFogDepth = -mv.z;
+   181→        gl_Position = projectionMatrix * mv;
+   182→      }
+   183→    `,
+   184→    fragmentShader: /* glsl */ `
+   185→      uniform sampler2D uAtlas;
+   186→      uniform float uTime;
+   187→      uniform vec3 uFogColor;
+   188→      uniform float uFogNear;
+   189→      uniform float uFogFar;
+   190→      uniform float uOpacity;
+   191→      uniform vec3 uSunDir;
+   192→      uniform vec3 uSunColor;
+   193→      varying vec2 vUv;
+   194→      varying vec3 vColor;
+   195→      varying vec3 vWorldPos;
+   196→      varying float vFogDepth;
+   197→      varying float vIsTop;
+   198→      void main() {
+   199→        // scroll UVs for a flowing feel
+   200→        vec2 uv = vUv + vec2(uTime * 0.012, uTime * 0.018);
+   201→        vec4 tex = texture2D(uAtlas, uv);
+   202→        vec3 col = tex.rgb * vColor;
+   203→        // specular shimmer on top faces (sun glint)
+   204→        if (vIsTop > 0.5) {
+   205→          // approximate normal from wave derivatives
+   206→          vec3 n = normalize(vec3(
+   207→            cos(vWorldPos.x * 0.8 + uTime * 1.5) * 0.3,
+   208→            1.0,
+   209→            sin(vWorldPos.z * 0.6 + uTime * 1.2) * 0.3
+   210→          ));
+   211→          vec3 viewDir = normalize(cameraPosition - vWorldPos);
+   212→          vec3 halfDir = normalize(normalize(uSunDir) + viewDir);
+   213→          float spec = pow(max(dot(n, halfDir), 0.0), 32.0);
+   214→          col += uSunColor * spec * 0.6;
+   215→          // slight depth-based color shift (deeper = darker)
+   216→          col *= 0.85 + 0.15 * smoothstep(0.0, 0.5, vColor.r);
+   217→        }
+   218→        // fog
+   219→        float fogFactor = smoothstep(uFogNear, uFogFar, vFogDepth);
+   220→        col = mix(col, uFogColor, fogFactor);
+   221→        float alpha = uOpacity * (1.0 - fogFactor * 0.2);
+   222→        gl_FragColor = vec4(col, alpha);
+   223→      }
+   224→    `,
+   225→    vertexColors: true,
+   226→  });
+   227→}
+   228→
+   229→function headingFromYaw(yaw: number): string {
+   230→  // yaw=0 → looking -Z (north). Normalize to 0..2π.
+   231→  let a = (-yaw) % (Math.PI * 2);
+   232→  if (a < 0) a += Math.PI * 2;
+   233→  const deg = (a / (Math.PI * 2)) * 360;
+   234→  const dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+   235→  const idx = Math.round(deg / 45) % 8;
+   236→  return dirs[idx];
+   237→}
+   238→
+   239→export class Engine {
+   240→  canvas: HTMLCanvasElement;
+   241→  renderer: THREE.WebGLRenderer;
+   242→  scene: THREE.Scene;
+   243→  camera: THREE.PerspectiveCamera;
+   244→  world: World;
+   245→  player: Player;
+   246→  callbacks: EngineCallbacks;
+   247→  settings: Settings;
+   248→
+   249→  sun: THREE.DirectionalLight;
+   250→  hemi: THREE.HemisphereLight;
+   251→  ambient: THREE.AmbientLight;
+   252→  clouds: THREE.Mesh | null = null;
+   253→  sky: Sky;
+   254→  particles: ParticleSystem;
+   255→  explosions: ExplosionSystem;
+   256→  rain: THREE.Points | null = null;
+   257→  rainVel: Float32Array | null = null;
+   258→  selectionBox: THREE.LineSegments | null = null;
+   259→  // cached colors (avoid per-frame allocation)
+   260→  private C_SUN_WARM = new THREE.Color("#fff2d8");
+   261→  private C_SUN_SUNSET = new THREE.Color("#ff9a3a");
+   262→  private _sunColor = new THREE.Color();
+   263→  // cached raycast result (reused for selection box + break progress)
+   264→  private _frameRaycast: { x: number; y: number; z: number; nx: number; ny: number; nz: number } | null = null;
+   265→
+   266→  timeOfDay = 0.3; // start at morning
+   267→  running = false;
+   268→  lastTime = 0;
+   269→  fpsAccum = 0;
+   270→  fpsCount = 0;
+   271→  fps = 60;
+   272→  hudTimer = 0;
+   273→
+   274→  hotbar: number[];
+   275→  selected = 0;
+   276→
+   277→  pointerLocked = false;
+   278→  inputEnabled = true;
+   279→  // drag-to-look fallback
+   280→  private dragLook = false;
+   281→  private dragLastX = 0;
+   282→  private dragLastY = 0;
+   283→  private clickStartX = 0;
+   284→  private clickStartY = 0;
+   285→  private clickStartT = 0;
+   286→  private clickMoved = 0;
+   287→  private keys = new Set<string>();
+   288→  private mouseButtons = new Set<number>();
+   289→  private breakCooldown = 0;
+   290→  private placeCooldown = 0;
+   291→
+   292→  // touch input (written by React layer via setTouchInput)
+   293→  touchInput = {
+   294→    moveX: 0, // -1..1
+   295→    moveY: 0, // -1..1
+   296→    lookDX: 0, // pixels delta this frame
+   297→    lookDY: 0,
+   298→    jump: false,
+   299→    sprint: false,
+   300→    sneak: false,
+   301→    breakBtn: false,
+   302→    placeBtn: false,
+   303→  };
+   304→  // targeted block for crack overlay
+   305→  targetBlock: { x: number; y: number; z: number } | null = null;
+   306→  breakProgress = 0; // 0..1
+   307→
+   308→  // weather
+   309→  private weatherTimer = 60; // seconds until next weather change
+   310→  raining = false;
+   311→
+   312→  // edits tracking for save
+   313→  private edits = new Map<string, number>();
+   314→
+   315→  private materials: {
+   316→    solid: THREE.Material;
+   317→    cutout: THREE.Material;
+   318→    water: THREE.Material;
+   319→  };
+   320→
+   321→  // bound handlers
+   322→  private _onKeyDown: (e: KeyboardEvent) => void;
+   323→  private _onKeyUp: (e: KeyboardEvent) => void;
+   324→  private _onMouseDown: (e: MouseEvent) => void;
+   325→  private _onMouseUp: (e: MouseEvent) => void;
+   326→  private _onMouseMove: (e: MouseEvent) => void;
+   327→  private _onWheel: (e: WheelEvent) => void;
+   328→  private _onPointerLockChange: () => void;
+   329→  private _onResize: () => void;
+   330→  private _onContext: (e: Event) => void;
+   331→  private _raf = 0;
+   332→
+   333→  constructor(canvas: HTMLCanvasElement, opts: EngineOptions) {
+   334→    this.canvas = canvas;
+   335→    this.callbacks = opts;
+   336→    this.settings = opts.settings ?? loadSettings();
+   337→    this.hotbar = [...DEFAULT_HOTBAR];
+   338→
+   339→    // Auto-detect mobile devices and reduce render distance + pixel ratio for perf
+   340→    const isMobile =
+   341→      typeof window !== "undefined" &&
+   342→      ("ontouchstart" in window || navigator.maxTouchPoints > 0) &&
+   343→      window.matchMedia("(pointer: coarse)").matches;
+   344→    if (isMobile) {
+   345→      this.settings = {
+   346→        ...this.settings,
+   347→        renderDistance: Math.min(this.settings.renderDistance, 4),
+   348→      };
+   349→    }
+   350→
+   351→    try {
+   352→      this.renderer = new THREE.WebGLRenderer({
+   353→        canvas,
+   354→        antialias: false,
+   355→        powerPreference: "high-performance",
+   356→      });
+   357→    } catch (e) {
+   358→      opts.onError?.(
+   359→        "WebGL could not be initialized. Make sure hardware acceleration is enabled in your browser settings."
+   360→      );
+   361→      throw e;
+   362→    }
+   363→    // Cap pixel ratio lower on mobile for performance
+   364→    this.renderer.setPixelRatio(
+   365→      Math.min(window.devicePixelRatio, isMobile ? 1.0 : 1.5)
+   366→    );
+   367→    this.renderer.setSize(window.innerWidth, window.innerHeight, false);
+   368→    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+   369→
+   370→    this.scene = new THREE.Scene();
+   371→    this.scene.background = new THREE.Color("#87b6e8");
+   372→    this.scene.fog = new THREE.Fog(
+   373→      "#bcd8ee",
+   374→      CHUNK_SIZE * 2,
+   375→      CHUNK_SIZE * (this.settings.renderDistance - 0.5)
+   376→    );
+   377→
+   378→    this.camera = new THREE.PerspectiveCamera(
+   379→      this.settings.fov,
+   380→      window.innerWidth / window.innerHeight,
+   381→      0.05,
+   382→      1000
+   383→    );
+   384→
+   385→    // materials
+   386→    const atlas = buildAtlasTexture();
+   387→    this.materials = {
+   388→      solid: new THREE.MeshLambertMaterial({
+   389→        map: atlas,
+   390→        vertexColors: true,
+   391→      }),
+   392→      cutout: new THREE.MeshLambertMaterial({
+   393→        map: atlas,
+   394→        vertexColors: true,
+   395→        transparent: true,
+   396→        alphaTest: 0.4,
+   397→        side: THREE.DoubleSide,
+   398→      }),
+   399→      water: makeWaterMaterial(atlas),
+   400→    };
+   401→
+   402→    this.world = new World(this.scene, this.materials, opts.seed);
+   403→    this.world.ao = this.settings.ao;
+   404→    this.world.renderDistance = this.settings.renderDistance;
+   405→
+   406→    // Placeholder player; real spawn position is computed in initSpawn()
+   407→    this.player = new Player(this.world, this.camera, 8.5, 50, 8.5);
+   408→    this.player.gameMode = this.settings.gameMode;
+   409→
+   410→    // Lights
+   411→    this.ambient = new THREE.AmbientLight(0xffffff, 0.35);
+   412→    this.scene.add(this.ambient);
+   413→    this.hemi = new THREE.HemisphereLight(0xbfd8ff, 0x6a5a3a, 0.55);
+   414→    this.scene.add(this.hemi);
+   415→    this.sun = new THREE.DirectionalLight(0xfff2d8, 1.0);
+   416→    this.sun.position.set(40, 80, 20);
+   417→    this.scene.add(this.sun);
+   418→    this.scene.add(this.sun.target);
+   419→
+   420→    this.makeClouds();
+   421→    this.sky = new Sky(this.scene);
+   422→    this.particles = new ParticleSystem(this.scene);
+   423→    this.explosions = new ExplosionSystem({
+   424→      removeBlock: (x, y, z) => {
+   425→        this.world.setBlock(x, y, z, Block.AIR);
+   426→        this.edits.set(`${x},${y},${z}`, Block.AIR);
+   427→        this.world.remeshAround(x, z);
+   428→        if (x & 15 === 0) this.world.remeshAround(x - 1, z);
+   429→        if (x & 15 === 15) this.world.remeshAround(x + 1, z);
+   430→        if (z & 15 === 0) this.world.remeshAround(x, z - 1);
+   431→        if (z & 15 === 15) this.world.remeshAround(x, z + 1);
+   432→      },
+   433→      emitParticles: (x, y, z, block, count) => {
+   434→        this.particles.emitBlockBreak(x, y, z, block, count);
+   435→      },
+   436→      getBlock: (x, y, z) => this.world.getBlock(x, y, z),
+   437→    });
+   438→    this.makeRain();
+   439→    this.makeSelectionBox();
+   440→
+   441→    // bind handlers
+   442→    this._onKeyDown = (e) => this.onKeyDown(e);
+   443→    this._onKeyUp = (e) => this.onKeyUp(e);
+   444→    this._onMouseDown = (e) => this.onMouseDown(e);
+   445→    this._onMouseUp = (e) => this.onMouseUp(e);
+   446→    this._onMouseMove = (e) => this.onMouseMove(e);
+   447→    this._onWheel = (e) => this.onWheel(e);
+   448→    this._onPointerLockChange = () => this.onPointerLockChange();
+   449→    this._onResize = () => this.onResize();
+   450→    this._onContext = (e) => e.preventDefault();
+   451→  }
+   452→
+   453→  start() {
+   454→    if (this.running) return;
+   455→    try {
+   456→      this.initSpawn();
+   457→    } catch (e) {
+   458→      this.callbacks.onError?.(
+   459→        "Failed to generate world: " + (e as Error).message
+   460→      );
+   461→      throw e;
+   462→    }
+   463→    this.running = true;
+   464→    window.addEventListener("keydown", this._onKeyDown);
+   465→    window.addEventListener("keyup", this._onKeyUp);
+   466→    window.addEventListener("mousedown", this._onMouseDown);
+   467→    window.addEventListener("mouseup", this._onMouseUp);
+   468→    window.addEventListener("mousemove", this._onMouseMove);
+   469→    window.addEventListener("wheel", this._onWheel, { passive: false });
+   470→    document.addEventListener("pointerlockchange", this._onPointerLockChange);
+   471→    window.addEventListener("resize", this._onResize);
+   472→    if (typeof window !== "undefined" && window.visualViewport) {
+   473→      window.visualViewport.addEventListener("resize", this._onResize);
+   474→    }
+   475→    this.canvas.addEventListener("contextmenu", this._onContext);
+   476→    this.lastTime = performance.now();
+   477→    this._raf = requestAnimationFrame(this.loop);
+   478→    this.callbacks.onReady?.();
+   479→    // Expose for debugging (dev only)
+   480→    if (typeof window !== "undefined") {
+   481→      (window as unknown as { __engine?: Engine }).__engine = this;
+   482→    }
+   483→  }
+   484→
+   485→  dispose() {
+   486→    this.running = false;
+   487→    cancelAnimationFrame(this._raf);
+   488→    window.removeEventListener("keydown", this._onKeyDown);
+   489→    window.removeEventListener("keyup", this._onKeyUp);
+   490→    window.removeEventListener("mousedown", this._onMouseDown);
+   491→    window.removeEventListener("mouseup", this._onMouseUp);
+   492→    window.removeEventListener("mousemove", this._onMouseMove);
+   493→    window.removeEventListener("wheel", this._onWheel);
+   494→    document.removeEventListener("pointerlockchange", this._onPointerLockChange);
+   495→    window.removeEventListener("resize", this._onResize);
+   496→    if (typeof window !== "undefined" && window.visualViewport) {
+   497→      window.visualViewport.removeEventListener("resize", this._onResize);
+   498→    }
+   499→    this.canvas.removeEventListener("contextmenu", this._onContext);
+   500→    if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+   501→    // dispose all subsystems to prevent GPU memory leaks
+   502→    this.world.dispose();
+   503→    this.sky.dispose();
+   504→    this.particles.dispose();
+   505→    if (this.clouds) {
+   506→      this.scene.remove(this.clouds);
+   507→      this.clouds.geometry.dispose();
+   508→      (this.clouds.material as THREE.Material).dispose();
+   509→    }
+   510→    if (this.rain) {
+   511→      this.scene.remove(this.rain);
+   512→      this.rain.geometry.dispose();
+   513→      (this.rain.material as THREE.Material).dispose();
+   514→    }
+   515→    if (this.selectionBox) {
+   516→      this.scene.remove(this.selectionBox);
+   517→      this.selectionBox.geometry.dispose();
+   518→      (this.selectionBox.material as THREE.Material).dispose();
+   519→    }
+   520→    this.materials.solid.dispose();
+   521→    this.materials.cutout.dispose();
+   522→    this.materials.water.dispose();
+   523→    this.renderer.dispose();
+   524→  }
+   525→
+   526→  private initSpawn() {
+   527→    for (let dx = -2; dx <= 2; dx++)
+   528→      for (let dz = -2; dz <= 2; dz++) this.world.ensureTerrain(dx, dz);
+   529→    for (let dx = -2; dx <= 2; dx++)
+   530→      for (let dz = -2; dz <= 2; dz++) this.world.ensureDecorated(dx, dz);
+   531→    // Spawn the player at the Lahore city center, elevated for a panoramic view.
+   532→    const spawnX = 40;
+   533→    const spawnZ = 40;
+   534→    const groundY = Player.spawnY(this.world, spawnX, spawnZ);
+   535→    // Spawn on the ground (not flying) to avoid constant chunk streaming.
+   536→    this.player.pos.set(spawnX + 0.5, groundY + 0.5, spawnZ + 0.5);
+   537→    this.player.vel.set(0, 0, 0);
+   538→    this.player.yaw = 0.7; // face toward the mosque entrance
+   539→    this.player.pitch = -0.1;
+   540→    (this.player as unknown as { _targetYaw: number })._targetYaw = 0.7;
+   541→    (this.player as unknown as { _targetPitch: number })._targetPitch = -0.1;
+   542→    // creative mode but not flying — press F to fly
+   543→    this.player.gameMode = "creative";
+   544→    this.player.flying = false;
+   545→  }
+   546→
+   547→  requestPointerLock() {
+   548→    try {
+   549→      const r = this.canvas.requestPointerLock() as unknown as
+   550→        | Promise<void>
+   551→        | undefined;
+   552→      if (r && typeof r.then === "function") {
+   553→        r.catch(() => {});
+   554→      }
+   555→    } catch {
+   556→      /* ignore */
+   557→    }
+   558→  }
+   559→
+   560→  // ---- settings ----
+   561→  setSettings(partial: Partial<Settings>) {
+   562→    this.settings = { ...this.settings, ...partial };
+   563→    saveSettings(this.settings);
+   564→    // apply live
+   565→    if (partial.fov !== undefined) {
+   566→      this.camera.fov = this.settings.fov;
+   567→      this.camera.updateProjectionMatrix();
+   568→    }
+   569→    if (partial.renderDistance !== undefined) {
+   570→      const f = this.scene.fog as THREE.Fog;
+   571→      f.far = CHUNK_SIZE * (this.settings.renderDistance - 0.5);
+   572→      this.world.setRenderDistance(this.settings.renderDistance);
+   573→    }
+   574→    if (partial.ao !== undefined) {
+   575→      this.world.setAo(this.settings.ao);
+   576→    }
+   577→    if (partial.renderClouds !== undefined && this.clouds) {
+   578→      this.clouds.visible = this.settings.renderClouds;
+   579→    }
+   580→    if (partial.renderStars !== undefined) {
+   581→      this.sky.stars.visible = this.settings.renderStars;
+   582→    }
+   583→    if (partial.gameMode !== undefined) {
+   584→      this.player.gameMode = this.settings.gameMode;
+   585→      if (this.settings.gameMode === "creative") {
+   586→        this.player.flying = false; // let user toggle fly manually
+   587→      }
+   588→    }
+   589→  }
+   590→
+   591→  setGameMode(mode: "creative" | "survival") {
+   592→    this.setSettings({ gameMode: mode });
+   593→    this.player.gameMode = mode;
+   594→  }
+   595→
+   596→  setTimeOfDay(t: number) {
+   597→    this.timeOfDay = ((t % 1) + 1) % 1;
+   598→  }
+   599→
+   600→  teleportTo(x: number, z: number) {
+   601→    for (let dx = -1; dx <= 1; dx++)
+   602→      for (let dz = -1; dz <= 1; dz++)
+   603→        this.world.ensureTerrain(
+   604→          Math.floor(x / CHUNK_SIZE) + dx,
+   605→          Math.floor(z / CHUNK_SIZE) + dz
+   606→        );
+   607→    for (let dx = -1; dx <= 1; dx++)
+   608→      for (let dz = -1; dz <= 1; dz++)
+   609→        this.world.ensureDecorated(
+   610→          Math.floor(x / CHUNK_SIZE) + dx,
+   611→          Math.floor(z / CHUNK_SIZE) + dz
+   612→        );
+   613→    const y = Player.spawnY(this.world, Math.floor(x), Math.floor(z));
+   614→    this.player.pos.set(x + 0.5, y + 0.5, z + 0.5);
+   615→    this.player.vel.set(0, 0, 0);
+   616→  }
+   617→
+   618→  setSelected(i: number) {
+   619→    this.selected =
+   620→      ((i % this.hotbar.length) + this.hotbar.length) % this.hotbar.length;
+   621→  }
+   622→
+   623→  setHotbarSlot(slot: number, blockId: number) {
+   624→    if (slot < 0 || slot >= this.hotbar.length) return;
+   625→    this.hotbar[slot] = blockId;
+   626→  }
+   627→
+   628→  getSelectedBlock(): number {
+   629→    return this.hotbar[this.selected];
+   630→  }
+   631→
+   632→  // Sample biome at world coords for minimap (returns BiomeId)
+   633→  getBiomeAt(wx: number, wz: number): number {
+   634→    return this.world.getBiomeAt(wx, wz);
+   635→  }
+   636→
+   637→  // Sample terrain height at world coords for minimap
+   638→  getHeightAt(wx: number, wz: number): number {
+   639→    return this.world.gen.column(wx, wz).height;
+   640→  }
+   641→
+   642→  // React touch layer writes touch deltas/state here.
+   643→  setTouchInput(partial: Partial<typeof this.touchInput>) {
+   644→    Object.assign(this.touchInput, partial);
+   645→  }
+   646→
+   647→  // ---- save / load ----
+   648→  static hasSave(): boolean {
+   649→    try {
+   650→      return !!localStorage.getItem(SAVE_KEY);
+   651→    } catch {
+   652→      return false;
+   653→    }
+   654→  }
+   655→
+   656→  saveState(seed: number) {
+   657→    try {
+   658→      const editsArr: [number, number, number, number][] = [];
+   659→      for (const [k, v] of this.edits) {
+   660→        const [x, y, z] = k.split(",").map(Number);
+   661→        editsArr.push([x, y, z, v]);
+   662→      }
+   663→      const data = {
+   664→        seed,
+   665→        time: this.timeOfDay,
+   666→        player: {
+   667→          x: this.player.pos.x,
+   668→          y: this.player.pos.y,
+   669→          z: this.player.pos.z,
+   670→          yaw: this.player.yaw,
+   671→          pitch: this.player.pitch,
+   672→          health: this.player.health,
+   673→          hunger: this.player.hunger,
+   674→          flying: this.player.flying,
+   675→          gameMode: this.player.gameMode,
+   676→        },
+   677→        hotbar: this.hotbar,
+   678→        selected: this.selected,
+   679→        edits: editsArr,
+   680→      };
+   681→      localStorage.setItem(SAVE_KEY, JSON.stringify(data));
+   682→      return true;
+   683→    } catch {
+   684→      return false;
+   685→    }
+   686→  }
+   687→
+   688→  loadState(): { seed: number } | null {
+   689→    try {
+   690→      const raw = localStorage.getItem(SAVE_KEY);
+   691→      if (!raw) return null;
+   692→      const data = JSON.parse(raw);
+   693→      // restore edits
+   694→      if (Array.isArray(data.edits)) {
+   695→        for (const [x, y, z, b] of data.edits) {
+   696→          this.world.setBlock(x, y, z, b);
+   697→          this.edits.set(`${x},${y},${z}`, b);
+   698→        }
+   699→      }
+   700→      // restore player
+   701→      const p = data.player;
+   702→      if (p) {
+   703→        this.player.pos.set(p.x, p.y, p.z);
+   704→        this.player.vel.set(0, 0, 0);
+   705→        this.player.yaw = p.yaw ?? 0;
+   706→        this.player.pitch = p.pitch ?? 0;
+   707→        (this.player as unknown as { _targetYaw: number })._targetYaw = p.yaw ?? 0;
+   708→        (this.player as unknown as { _targetPitch: number })._targetPitch = p.pitch ?? 0;
+   709→        this.player.health = p.health ?? 20;
+   710→        this.player.hunger = p.hunger ?? 20;
+   711→        this.player.flying = p.flying ?? false;
+   712→        this.player.gameMode = p.gameMode ?? "creative";
+   713→      }
+   714→      if (Array.isArray(data.hotbar)) this.hotbar = data.hotbar;
+   715→      if (typeof data.selected === "number") this.selected = data.selected;
+   716→      if (typeof data.time === "number") this.timeOfDay = data.time;
+   717→      return { seed: data.seed };
+   718→    } catch {
+   719→      return null;
+   720→    }
+   721→  }
+   722→
+   723→  static clearSave() {
+   724→    try {
+   725→      localStorage.removeItem(SAVE_KEY);
+   726→    } catch {
+   727→      /* ignore */
+   728→    }
+   729→  }
+   730→
+   731→  // ---- input handlers ----
+   732→  private onKeyDown(e: KeyboardEvent) {
+   733→    const code = e.code;
+   734→    this.keys.add(code);
+   735→    if (code.startsWith("Digit")) {
+   736→      const n = parseInt(code.slice(5), 10);
+   737→      if (n >= 1 && n <= 9) this.setSelected(n - 1);
+   738→    }
+   739→    if (code === "KeyF") {
+   740→      // fly toggle — creative only
+   741→      if (this.player.gameMode === "creative") this.player.toggleFly();
+   742→    }
+   743→    if (code === "KeyG") {
+   744→      // toggle game mode
+   745→      this.setGameMode(
+   746→        this.player.gameMode === "creative" ? "survival" : "creative"
+   747→      );
+   748→    }
+   749→    if (code === "KeyR") {
+   750→      // rain toggle
+   751→      this.raining = !this.raining;
+   752→      this.weatherTimer = 120;
+   753→    }
+   754→    if (code === "KeyT") {
+   755→      this.setTimeOfDay(0.5); // noon
+   756→    }
+   757→    if (code === "KeyN") {
+   758→      this.setTimeOfDay(0.0); // night
+   759→    }
+   760→    if (code === "KeyH") {
+   761→      // teleport to Lahore city center
+   762→      this.teleportTo(40, 40);
+   763→    }
+   764→    if (code === "Escape") {
+   765→      if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+   766→    }
+   767→    if (code === "Space" || code.startsWith("Arrow")) e.preventDefault();
+   768→  }
+   769→
+   770→  private onKeyUp(e: KeyboardEvent) {
+   771→    this.keys.delete(e.code);
+   772→  }
+   773→
+   774→  private updateInputState() {
+   775→    const i = this.player.input;
+   776→    if (!this.inputEnabled) {
+   777→      i.forward = i.back = i.left = i.right = i.jump = i.sprint = i.sneak = false;
+   778→      return;
+   779→    }
+   780→    // keyboard
+   781→    i.forward = this.keys.has("KeyW");
+   782→    i.back = this.keys.has("KeyS");
+   783→    i.left = this.keys.has("KeyA");
+   784→    i.right = this.keys.has("KeyD");
+   785→    i.jump = this.keys.has("Space");
+   786→    i.sprint = this.keys.has("ShiftLeft") || this.keys.has("ShiftRight");
+   787→    i.sneak = this.keys.has("ControlLeft") || this.keys.has("ControlRight");
+   788→    // touch joystick merge (analog: treat >0.3 as pressed)
+   789→    const t = this.touchInput;
+   790→    if (Math.abs(t.moveY) > 0.15) {
+   791→      if (t.moveY > 0) i.forward = true;
+   792→      else i.back = true;
+   793→    }
+   794→    if (Math.abs(t.moveX) > 0.15) {
+   795→      if (t.moveX > 0) i.right = true;
+   796→      else i.left = true;
+   797→    }
+   798→    if (t.jump) i.jump = true;
+   799→    if (t.sprint) i.sprint = true;
+   800→    if (t.sneak) i.sneak = true;
+   801→  }
+   802→
+   803→  private onMouseDown(e: MouseEvent) {
+   804→    this.mouseButtons.add(e.button);
+   805→    if (!this.inputEnabled) return;
+   806→    if (this.pointerLocked) {
+   807→      if (e.button === 0) {
+   808→        this.tryBreak();
+   809→        this.breakCooldown = 0.25;
+   810→      } else if (e.button === 2) {
+   811→        this.tryPlace();
+   812→        this.placeCooldown = 0.25;
+   813→      }
+   814→    } else {
+   815→      if (e.button === 0) {
+   816→        this.dragLook = true;
+   817→        this.dragLastX = e.clientX;
+   818→        this.dragLastY = e.clientY;
+   819→        this.clickStartX = e.clientX;
+   820→        this.clickStartY = e.clientY;
+   821→        this.clickStartT = performance.now();
+   822→        this.clickMoved = 0;
+   823→      } else if (e.button === 2) {
+   824→        this.tryPlace();
+   825→        this.placeCooldown = 0.25;
+   826→      }
+   827→    }
+   828→  }
+   829→
+   830→  private onMouseUp(e: MouseEvent) {
+   831→    this.mouseButtons.delete(e.button);
+   832→    if (!this.inputEnabled) {
+   833→      this.dragLook = false;
+   834→      return;
+   835→    }
+   836→    if (!this.pointerLocked && e.button === 0 && this.dragLook) {
+   837→      const dt = performance.now() - this.clickStartT;
+   838→      if (this.clickMoved < 6 && dt < 300) {
+   839→        this.tryBreak();
+   840→        this.breakCooldown = 0.25;
+   841→      }
+   842→      this.dragLook = false;
+   843→    }
+   844→  }
+   845→
+   846→  private onMouseMove(e: MouseEvent) {
+   847→    if (!this.inputEnabled) return;
+   848→    const sens = 0.0022 * this.settings.mouseSensitivity;
+   849→    if (this.pointerLocked) {
+   850→      this.player.setLookFromDelta(e.movementX, e.movementY, sens);
+   851→    } else if (this.dragLook && this.mouseButtons.has(0)) {
+   852→      const dx = e.clientX - this.dragLastX;
+   853→      const dy = e.clientY - this.dragLastY;
+   854→      this.dragLastX = e.clientX;
+   855→      this.dragLastY = e.clientY;
+   856→      this.clickMoved += Math.abs(dx) + Math.abs(dy);
+   857→      this.player.setLookFromDelta(dx, dy, 0.005 * this.settings.mouseSensitivity);
+   858→    }
+   859→  }
+   860→
+   861→  private onWheel(e: WheelEvent) {
+   862→    if (!this.inputEnabled) return;
+   863→    e.preventDefault();
+   864→    const dir = e.deltaY > 0 ? 1 : -1;
+   865→    this.setSelected(this.selected + dir);
+   866→  }
+   867→
+   868→  private onPointerLockChange() {
+   869→    this.pointerLocked = document.pointerLockElement === this.canvas;
+   870→  }
+   871→
+   872→  private onResize() {
+   873→    // Use visualViewport when available for correct mobile sizing (address bar)
+   874→    const w = window.innerWidth;
+   875→    const h =
+   876→      (typeof window !== "undefined" && window.visualViewport?.height) ||
+   877→      window.innerHeight;
+   878→    this.renderer.setSize(w, h, false);
+   879→    this.camera.aspect = w / h;
+   880→    this.camera.updateProjectionMatrix();
+   881→  }
+   882→
+   883→  // Public for touch tap gestures (one-shot, not continuous)
+   884→  breakBlock() {
+   885→    this.tryBreak();
+   886→  }
+   887→
+   888→  placeBlock() {
+   889→    this.tryPlace();
+   890→  }
+   891→
+   892→  private tryBreak() {
+   893→    const hit = this.player.raycast(REACH_DISTANCE);
+   894→    if (!hit) return;
+   895→    const b = this.world.getBlock(hit.x, hit.y, hit.z);
+   896→    if (b === Block.BEDROCK) return;
+   897→    this.world.setBlock(hit.x, hit.y, hit.z, Block.AIR);
+   898→    this.edits.set(`${hit.x},${hit.y},${hit.z}`, Block.AIR);
+   899→    this.particles.emitBlockBreak(hit.x, hit.y, hit.z, b, 16);
+   900→    this.world.remeshAround(hit.x, hit.z);
+   901→    if (hit.nx !== 0) this.world.remeshAround(hit.x + hit.nx, hit.z);
+   902→    if (hit.nz !== 0) this.world.remeshAround(hit.x, hit.z + hit.nz);
+   903→  }
+   904→
+   905→  private tryPlace() {
+   906→    const hit = this.player.raycast(REACH_DISTANCE);
+   907→    if (!hit) return;
+   908→    // If looking at TNT, ignite it instead of placing
+   909→    const lookedAt = this.world.getBlock(hit.x, hit.y, hit.z);
+   910→    if (lookedAt === Block.TNT) {
+   911→      this.explosions.ignite(hit.x, hit.y, hit.z);
+   912→      return;
+   913→    }
+   914→    const px = hit.x + hit.nx;
+   915→    const py = hit.y + hit.ny;
+   916→    const pz = hit.z + hit.nz;
+   917→    const playerMinX = this.player.pos.x - 0.3;
+   918→    const playerMaxX = this.player.pos.x + 0.3;
+   919→    const playerMinY = this.player.pos.y;
+   920→    const playerMaxY = this.player.pos.y + 1.8;
+   921→    const playerMinZ = this.player.pos.z - 0.3;
+   922→    const playerMaxZ = this.player.pos.z + 0.3;
+   923→    if (
+   924→      px + 1 > playerMinX &&
+   925→      px < playerMaxX &&
+   926→      py + 1 > playerMinY &&
+   927→      py < playerMaxY &&
+   928→      pz + 1 > playerMinZ &&
+   929→      pz < playerMaxZ
+   930→    ) {
+   931→      const def = BLOCKS[this.getSelectedBlock()];
+   932→      if (def && def.solid) return;
+   933→    }
+   934→    const existing = this.world.getBlock(px, py, pz);
+   935→    if (existing !== Block.AIR && !BLOCKS[existing]?.liquid) return;
+   936→    const placed = this.getSelectedBlock();
+   937→    this.world.setBlock(px, py, pz, placed);
+   938→    this.edits.set(`${px},${py},${pz}`, placed);
+   939→    this.particles.emitBlockBreak(px, py, pz, placed, 6);
+   940→    this.world.remeshAround(px, pz);
+   941→    if (hit.nx !== 0) this.world.remeshAround(px + hit.nx, pz);
+   942→    if (hit.nz !== 0) this.world.remeshAround(px, pz + hit.nz);
+   943→  }
+   944→
+   945→  // ---- clouds ----
+   946→  private makeClouds() {
+   947→    const size = 512;
+   948→    const canvas = document.createElement("canvas");
+   949→    canvas.width = size;
+   950→    canvas.height = size;
+   951→    const ctx = canvas.getContext("2d")!;
+   952→    ctx.clearRect(0, 0, size, size);
+   953→    for (let i = 0; i < 60; i++) {
+   954→      const x = Math.random() * size;
+   955→      const y = Math.random() * size;
+   956→      const r = 20 + Math.random() * 50;
+   957→      const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+   958→      g.addColorStop(0, "rgba(255,255,255,0.7)");
+   959→      g.addColorStop(1, "rgba(255,255,255,0)");
+   960→      ctx.fillStyle = g;
+   961→      ctx.beginPath();
+   962→      ctx.arc(x, y, r, 0, Math.PI * 2);
+   963→      ctx.fill();
+   964→    }
+   965→    const tex = new THREE.CanvasTexture(canvas);
+   966→    tex.wrapS = THREE.RepeatWrapping;
+   967→    tex.wrapT = THREE.RepeatWrapping;
+   968→    tex.repeat.set(4, 4);
+   969→    const geo = new THREE.PlaneGeometry(2000, 2000);
+   970→    const mat = new THREE.MeshBasicMaterial({
+   971→      map: tex,
+   972→      transparent: true,
+   973→      opacity: 0.6,
+   974→      depthWrite: false,
+   975→      fog: false,
+   976→    });
+   977→    this.clouds = new THREE.Mesh(geo, mat);
+   978→    this.clouds.rotation.x = -Math.PI / 2;
+   979→    this.clouds.position.y = 90;
+   980→    this.clouds.visible = this.settings.renderClouds;
+   981→    this.scene.add(this.clouds);
+   982→  }
+   983→
+   984→  // ---- rain ----
+   985→  private makeRain() {
+   986→    const count = 4000;
+   987→    const positions = new Float32Array(count * 3);
+   988→    const vel = new Float32Array(count * 3);
+   989→    for (let i = 0; i < count; i++) {
+   990→      positions[i * 3] = (Math.random() - 0.5) * 60;
+   991→      positions[i * 3 + 1] = Math.random() * 40;
+   992→      positions[i * 3 + 2] = (Math.random() - 0.5) * 60;
+   993→      vel[i * 3] = 0;
+   994→      vel[i * 3 + 1] = -20 - Math.random() * 10;
+   995→      vel[i * 3 + 2] = -2;
+   996→    }
+   997→    this.rainVel = vel;
+   998→    const geo = new THREE.BufferGeometry();
+   999→    geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+  1000→    const mat = new THREE.PointsMaterial({
+  1001→      color: 0xaac4dd,
+  1002→      size: 0.12,
+  1003→      transparent: true,
+  1004→      opacity: 0.5,
+  1005→      depthWrite: false,
+  1006→      fog: true,
+  1007→    });
+  1008→    this.rain = new THREE.Points(geo, mat);
+  1009→    this.rain.visible = false;
+  1010→    this.rain.frustumCulled = false;
+  1011→    this.scene.add(this.rain);
+  1012→  }
+  1013→
+  1014→  // ---- selection box (block highlight + break progress) ----
+  1015→  private makeSelectionBox() {
+  1016→    // wireframe box slightly larger than a block
+  1017→    const geo = new THREE.BoxGeometry(1.005, 1.005, 1.005);
+  1018→    const edges = new THREE.EdgesGeometry(geo);
+  1019→    const mat = new THREE.LineBasicMaterial({
+  1020→      color: 0x000000,
+  1021→      transparent: true,
+  1022→      opacity: 0.4,
+  1023→      depthTest: true,
+  1024→    });
+  1025→    this.selectionBox = new THREE.LineSegments(edges, mat);
+  1026→    this.selectionBox.visible = false;
+  1027→    this.scene.add(this.selectionBox);
+  1028→  }
+  1029→
+  1030→  private updateSelectionBox() {
+  1031→    if (!this.selectionBox) return;
+  1032→    // reuse the per-frame raycast computed in the loop (no new DDA)
+  1033→    const hit = this._frameRaycast;
+  1034→    if (hit) {
+  1035→      this.selectionBox.position.set(hit.x + 0.5, hit.y + 0.5, hit.z + 0.5);
+  1036→      this.selectionBox.visible = true;
+  1037→      // color shifts from black → red as break progress increases
+  1038→      const mat = this.selectionBox.material as THREE.LineBasicMaterial;
+  1039→      const p = this.breakProgress;
+  1040→      mat.color.setRGB(p, 0, 0);
+  1041→      mat.opacity = 0.4 + p * 0.4;
+  1042→    } else {
+  1043→      this.selectionBox.visible = false;
+  1044→    }
+  1045→  }
+  1046→
+  1047→  private updateRain(dt: number) {
+  1048→    if (!this.rain || !this.rainVel) return;
+  1049→    this.rain.visible = this.raining;
+  1050→    if (!this.raining) return;
+  1051→    this.rain.position.set(
+  1052→      this.player.pos.x,
+  1053→      this.player.pos.y,
+  1054→      this.player.pos.z
+  1055→    );
+  1056→    const posAttr = this.rain.geometry.getAttribute(
+  1057→      "position"
+  1058→    ) as THREE.BufferAttribute;
+  1059→    const arr = posAttr.array as Float32Array;
+  1060→    for (let i = 0; i < arr.length; i += 3) {
+  1061→      arr[i] += this.rainVel[i] * dt;
+  1062→      arr[i + 1] += this.rainVel[i + 1] * dt;
+  1063→      arr[i + 2] += this.rainVel[i + 2] * dt;
+  1064→      if (arr[i + 1] < -20) {
+  1065→        arr[i] = (Math.random() - 0.5) * 60;
+  1066→        arr[i + 1] = 30 + Math.random() * 10;
+  1067→        arr[i + 2] = (Math.random() - 0.5) * 60;
+  1068→      }
+  1069→    }
+  1070→    posAttr.needsUpdate = true;
+  1071→  }
+  1072→
+  1073→  private updateWeather(dt: number) {
+  1074→    if (!this.settings.weather) {
+  1075→      this.raining = false;
+  1076→      return;
+  1077→    }
+  1078→    this.weatherTimer -= dt;
+  1079→    if (this.weatherTimer <= 0) {
+  1080→      this.raining = !this.raining;
+  1081→      this.weatherTimer = this.raining ? 60 + Math.random() * 60 : 120 + Math.random() * 180;
+  1082→    }
+  1083→  }
+  1084→
+  1085→  // ---- day/night + sky ----
+  1086→  private updateSky(dt: number) {
+  1087→    this.timeOfDay += dt / DAY_LENGTH;
+  1088→    if (this.timeOfDay >= 1) this.timeOfDay -= 1;
+  1089→
+  1090→    this.sky.update(
+  1091→      this.timeOfDay,
+  1092→      this.player.pos.x,
+  1093→      this.player.pos.y,
+  1094→      this.player.pos.z
+  1095→    );
+  1096→
+  1097→    const ang = (this.timeOfDay - 0.25) * Math.PI * 2;
+  1098→    const sunY = Math.sin(ang);
+  1099→    const sunX = Math.cos(ang);
+  1100→    this.sun.position.set(
+  1101→      this.player.pos.x + sunX * 120,
+  1102→      this.player.pos.y + sunY * 120 + 10,
+  1103→      this.player.pos.z + 40
+  1104→    );
+  1105→    this.sun.target.position.copy(this.player.pos);
+  1106→
+  1107→    const dayFactor = Math.max(0, sunY);
+  1108→    let sunI = 0.2 + dayFactor * 1.0;
+  1109→    let ambI = 0.18 + dayFactor * 0.3;
+  1110→    let hemiI = 0.25 + dayFactor * 0.45;
+  1111→
+  1112→    // weather dimming
+  1113→    if (this.raining) {
+  1114→      sunI *= 0.45;
+  1115→      ambI *= 0.7;
+  1116→      hemiI *= 0.6;
+  1117→    }
+  1118→
+  1119→    const warmth = Math.max(0, 1 - Math.abs(sunY) * 2.2);
+  1120→    const sunColor = this._sunColor.lerpColors(this.C_SUN_WARM, this.C_SUN_SUNSET, warmth);
+  1121→    if (this.raining) sunColor.multiplyScalar(0.7);
+  1122→    this.sun.color.copy(sunColor);
+  1123→    this.sun.intensity = sunI * this.settings.brightness;
+  1124→    this.ambient.intensity = ambI * this.settings.brightness;
+  1125→    this.hemi.intensity = hemiI * this.settings.brightness;
+  1126→
+  1127→    // background + fog follow sky horizon color
+  1128→    (this.scene.background as THREE.Color).copy(this.sky.skyColor);
+  1129→    (this.scene.fog as THREE.Fog).color.copy(this.sky.fogColor);
+  1130→    if (this.raining) {
+  1131→      (this.scene.background as THREE.Color).multiplyScalar(0.6);
+  1132→      (this.scene.fog as THREE.Fog).color.multiplyScalar(0.7);
+  1133→    }
+  1134→
+  1135→    // clouds follow player
+  1136→    if (this.clouds) {
+  1137→      this.clouds.position.x = this.player.pos.x;
+  1138→      this.clouds.position.z = this.player.pos.z;
+  1139→      const cm = this.clouds.material as THREE.MeshBasicMaterial;
+  1140→      let cloudOp = 0.3 + dayFactor * 0.4;
+  1141→      if (this.raining) cloudOp = 0.7;
+  1142→      cm.opacity = cloudOp;
+  1143→    }
+  1144→
+  1145→    // water shader uniforms
+  1146→    const wmat = this.materials.water as THREE.ShaderMaterial;
+  1147→    wmat.uniforms.uTime.value += dt;
+  1148→    wmat.uniforms.uFogColor.value.copy(this.sky.fogColor);
+  1149→    wmat.uniforms.uFogNear.value = CHUNK_SIZE * 2;
+  1150→    wmat.uniforms.uFogFar.value = CHUNK_SIZE * (this.settings.renderDistance - 0.5);
+  1151→    // sun direction for specular shimmer
+  1152→    const wAng = (this.timeOfDay - 0.25) * Math.PI * 2;
+  1153→    (wmat.uniforms.uSunDir.value as THREE.Vector3).set(
+  1154→      Math.cos(wAng), Math.sin(wAng), 0.3
+  1155→    ).normalize();
+  1156→    (wmat.uniforms.uSunColor.value as THREE.Color).copy(this.sun.color);
+  1157→  }
+  1158→
+  1159→  // ---- main loop ----
+  1160→  private loop = (now: number) => {
+  1161→    if (!this.running) return;
+  1162→    this._raf = requestAnimationFrame(this.loop);
+  1163→    // Cap dt at 33ms (30fps min) to prevent physics explosions on frame spikes.
+  1164→    // If the frame took longer, we run multiple sub-steps for stable physics.
+  1165→    const rawDt = (now - this.lastTime) / 1000;
+  1166→    this.lastTime = now;
+  1167→    const dt = Math.min(0.033, rawDt);
+  1168→
+  1169→    // fps
+  1170→    this.fpsAccum += dt;
+  1171→    this.fpsCount++;
+  1172→    if (this.fpsAccum >= 0.5) {
+  1173→      this.fps = Math.round(this.fpsCount / this.fpsAccum);
+  1174→      this.fpsAccum = 0;
+  1175→      this.fpsCount = 0;
+  1176→    }
+  1177→
+  1178→    // input
+  1179→    this.updateInputState();
+  1180→
+  1181→    // look: touch + arrow keys + mouse (mouse handled in onMouseMove)
+  1182→    if (this.inputEnabled) {
+  1183→      const lr = 1.4 * dt;
+  1184→      if (this.keys.has("ArrowLeft"))
+  1185→        this.player.setLookFromDelta(-lr, 0, 1);
+  1186→      if (this.keys.has("ArrowRight"))
+  1187→        this.player.setLookFromDelta(lr, 0, 1);
+  1188→      if (this.keys.has("ArrowUp"))
+  1189→        this.player.setLookFromDelta(0, -lr, 1);
+  1190→      if (this.keys.has("ArrowDown"))
+  1191→        this.player.setLookFromDelta(0, lr, 1);
+  1192→      // touch look — higher sensitivity than mouse for responsive feel
+  1193→      if (this.touchInput.lookDX !== 0 || this.touchInput.lookDY !== 0) {
+  1194→        this.player.setLookFromDelta(
+  1195→          this.touchInput.lookDX,
+  1196→          this.touchInput.lookDY,
+  1197→          0.006 * this.settings.mouseSensitivity
+  1198→        );
+  1199→        this.touchInput.lookDX = 0;
+  1200→        this.touchInput.lookDY = 0;
+  1201→      }
+  1202→    }
+  1203→
+  1204→    // continuous break/place (mouse + touch buttons)
+  1205→    if (this.inputEnabled) {
+  1206→      this.breakCooldown -= dt;
+  1207→      this.placeCooldown -= dt;
+  1208→      if (
+  1209→        this.pointerLocked &&
+  1210→        this.mouseButtons.has(0) &&
+  1211→        this.breakCooldown <= 0
+  1212→      ) {
+  1213→        this.tryBreak();
+  1214→        this.breakCooldown = 0.22;
+  1215→      }
+  1216→      if (this.mouseButtons.has(2) && this.placeCooldown <= 0) {
+  1217→        this.tryPlace();
+  1218→        this.placeCooldown = 0.22;
+  1219→      }
+  1220→      // touch break button
+  1221→      if (this.touchInput.breakBtn && this.breakCooldown <= 0) {
+  1222→        this.tryBreak();
+  1223→        this.breakCooldown = 0.22;
+  1224→      }
+  1225→      // touch place button
+  1226→      if (this.touchInput.placeBtn && this.placeCooldown <= 0) {
+  1227→        this.tryPlace();
+  1228→        this.placeCooldown = 0.22;
+  1229→      }
+  1230→    }
+  1231→
+  1232→    // block-break progress tracking + selection box: ONE raycast per frame
+  1233→    if (this.inputEnabled) {
+  1234→      const hit = this.player.raycast(REACH_DISTANCE);
+  1235→      this._frameRaycast = hit;
+  1236→      const breaking =
+  1237→        (this.pointerLocked && this.mouseButtons.has(0)) ||
+  1238→        this.touchInput.breakBtn;
+  1239→      if (hit && breaking) {
+  1240→        if (
+  1241→          this.targetBlock &&
+  1242→          this.targetBlock.x === hit.x &&
+  1243→          this.targetBlock.y === hit.y &&
+  1244→          this.targetBlock.z === hit.z
+  1245→        ) {
+  1246→          this.breakProgress = Math.min(1, this.breakProgress + dt * 2);
+  1247→        } else {
+  1248→          this.targetBlock = { x: hit.x, y: hit.y, z: hit.z };
+  1249→          this.breakProgress = 0;
+  1250→        }
+  1251→      } else {
+  1252→        this.targetBlock = null;
+  1253→        this.breakProgress = 0;
+  1254→      }
+  1255→    } else {
+  1256→      this._frameRaycast = null;
+  1257→      this.targetBlock = null;
+  1258→      this.breakProgress = 0;
+  1259→    }
+  1260→
+  1261→    // player physics + survival
+  1262→    this.player.update(dt);
+  1263→
+  1264→    // world streaming (budget scales modestly with render distance)
+  1265→    const budget = Math.max(2, Math.floor(this.settings.renderDistance / 2));
+  1266→    this.world.update(this.player.pos.x, this.player.pos.z, budget);
+  1267→
+  1268→    // weather + sky + particles
+  1269→    this.updateWeather(dt);
+  1270→    this.updateRain(dt);
+  1271→    this.updateSky(dt);
+  1272→    this.particles.update(dt);
+  1273→    this.explosions.update(dt);
+  1274→    this.updateSelectionBox();
+  1275→
+  1276→    // FOV kick (sprint) — smooth apply to camera
+  1277→    const targetFov = this.settings.fov + this.player.fovKick;
+  1278→    if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+  1279→      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 10);
+  1280→      this.camera.updateProjectionMatrix();
+  1281→    }
+  1282→
+  1283→    // render
+  1284→    this.renderer.render(this.scene, this.camera);
+  1285→
+  1286→    // HUD updates (throttled)
+  1287→    this.hudTimer += dt;
+  1288→    if (this.hudTimer >= 0.15) {
+  1289→      this.hudTimer = 0;
+  1290→      this.emitHud();
+  1291→    }
+  1292→  };
+  1293→
+  1294→  private emitHud() {
+  1295→    if (!this.callbacks.onHud) return;
+  1296→    const biomeId = this.world.getBiomeAt(
+  1297→      Math.floor(this.player.pos.x),
+  1298→      Math.floor(this.player.pos.z)
+  1299→    );
+  1300→    const biome = getBiome(biomeId);
+  1301→    const sel = this.getSelectedBlock();
+  1302→    this.callbacks.onHud({
+  1303→      health: this.player.health,
+  1304→      maxHealth: this.player.maxHealth,
+  1305→      hunger: this.player.hunger,
+  1306→      maxHunger: this.player.maxHunger,
+  1307→      x: this.player.pos.x,
+  1308→      y: this.player.pos.y,
+  1309→      z: this.player.pos.z,
+  1310→      biome: biome.name,
+  1311→      biomeUrdu: biome.nameUrdu,
+  1312→      fps: this.fps,
+  1313→      timeOfDay: this.timeOfDay,
+  1314→      flying: this.player.flying,
+  1315→      pointerLocked: this.pointerLocked,
+  1316→      selectedBlock: sel,
+  1317→      selectedName: BLOCKS[sel]?.name ?? "?",
+  1318→      selectedSlot: this.selected,
+  1319→      hotbar: [...this.hotbar],
+  1320→      onGround: this.player.onGround,
+  1321→      inWater: this.player.inWater,
+  1322→      yaw: this.player.yaw,
+  1323→      heading: headingFromYaw(this.player.yaw),
+  1324→      weather: this.raining ? "rain" : "clear",
+  1325→      gameMode: this.player.gameMode,
+  1326→      brightness: this.settings.brightness,
+  1327→      settings: { ...this.settings },
+  1328→      raining: this.raining,
+  1329→      targetBlock: this.targetBlock,
+  1330→      breakProgress: this.breakProgress,
+  1331→      biomeId: biomeId,
+  1332→      flashTimer: this.explosions.flashTimer,
+  1333→    });
+  1334→  }
+  1335→}
+  1336→
+  1337→export { PLAYER_EYE, SEA_LEVEL, DEFAULT_SETTINGS };
+  1338→

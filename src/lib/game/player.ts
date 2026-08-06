@@ -119,17 +119,17 @@ export class Player {
   }
 
   update(dt: number) {
-    // Smooth look: fast lerp toward target (responsive but no jitter).
-    // 0.5 factor at 60fps → near-instant with tiny smoothing.
-    const lookLerp = Math.min(1, dt * 30);
+    // Smooth look: frame-rate-independent exponential decay.
+    // Same effective smoothing at any FPS (30, 60, 120, 144 Hz).
+    const lookLerp = 1 - Math.exp(-30 * dt);
     this.yaw += (this._targetYaw - this.yaw) * lookLerp;
     this.pitch += (this._targetPitch - this.pitch) * lookLerp;
 
-    // Determine if eye is in water
+    // Determine if eye is in water — use Math.floor (correct for negative coords)
     const eyeBlock = this.world.getBlock(
-      this.pos.x | 0,
-      (this.pos.y + PLAYER_EYE) | 0,
-      this.pos.z | 0
+      Math.floor(this.pos.x),
+      Math.floor(this.pos.y + PLAYER_EYE),
+      Math.floor(this.pos.z)
     );
     this.inWater = isLiquid(eyeBlock);
 
@@ -226,9 +226,10 @@ export class Player {
           this.fallStart = this.pos.y;
         }
       } else {
-        // falling — update fall start only if moving down past a threshold
-        if (this.vel.y < -2) {
-          if (this.fallStart < this.pos.y + 1) this.fallStart = this.pos.y;
+        // falling — track the PEAK (highest point before the fall).
+        // Only update if current y exceeds stored peak (not every frame).
+        if (this.vel.y < -2 && this.pos.y > this.fallStart) {
+          this.fallStart = this.pos.y;
         }
       }
       this.wasOnGround = this.onGround;
@@ -243,13 +244,9 @@ export class Player {
 
     // ---- survival stats ----
     if (this.gameMode === "survival") {
-      // hunger drains over time; faster when sprinting
-      this.hungerTimer += dt;
-      const drain = (this.input.sprint ? 0.25 : 0.08) * dt;
-      if (this.hungerTimer > 1) {
-        this.hunger = Math.max(0, this.hunger - drain);
-        this.hungerTimer = 0;
-      }
+      // hunger drains over time (per second, applied every frame for smoothness)
+      const drainPerSec = this.input.sprint ? 0.25 : 0.08;
+      this.hunger = Math.max(0, this.hunger - drainPerSec * dt);
       // regen health when hunger is high enough
       if (this.hunger >= 16 && this.health < this.maxHealth) {
         this.regenTimer += dt;
@@ -282,14 +279,14 @@ export class Player {
       this.health = Math.max(0, this.health - 4);
     }
 
-    // sneak lowers eye height (crouch), smooth interpolation
-    const sneakLerp = Math.min(1, dt * 12);
+    // sneak lowers eye height (crouch), frame-rate-independent smoothing
+    const sneakLerp = 1 - Math.exp(-12 * dt);
     this._targetEyeHeight = this.input.sneak && !this.flying ? PLAYER_EYE - 0.3 : PLAYER_EYE;
     this._eyeHeight += (this._targetEyeHeight - this._eyeHeight) * sneakLerp;
 
     // FOV kick on sprint (smooth)
     this._targetFovKick = this.input.sprint && (Math.abs(this.vel.x) + Math.abs(this.vel.z)) > 1 ? 6 : 0;
-    this.fovKick += (this._targetFovKick - this.fovKick) * Math.min(1, dt * 10);
+    this.fovKick += (this._targetFovKick - this.fovKick) * (1 - Math.exp(-10 * dt));
 
     // Update camera
     const bobY = Math.sin(this.bob) * 0.06;
@@ -312,7 +309,7 @@ export class Player {
     else if (axis === "y") p.y += amount;
     else p.z += amount;
 
-    // AABB — use bitwise | 0 for floor (fast for positive coords)
+    // AABB — use Math.floor (correct for negative coordinates)
     const minX = p.x - PLAYER_RADIUS;
     const maxX = p.x + PLAYER_RADIUS;
     const minY = p.y;
@@ -320,12 +317,12 @@ export class Player {
     const minZ = p.z - PLAYER_RADIUS;
     const maxZ = p.z + PLAYER_RADIUS;
 
-    const x0 = minX | 0;
-    const x1 = maxX | 0;
-    const y0 = minY | 0;
-    const y1 = maxY | 0;
-    const z0 = minZ | 0;
-    const z1 = maxZ | 0;
+    const x0 = Math.floor(minX);
+    const x1 = Math.floor(maxX);
+    const y0 = Math.floor(minY);
+    const y1 = Math.floor(maxY);
+    const z0 = Math.floor(minZ);
+    const z1 = Math.floor(maxZ);
 
     for (let x = x0; x <= x1; x++)
       for (let y = y0; y <= y1; y++)
@@ -382,9 +379,9 @@ export class Player {
       -Math.cos(this.yaw) * cp
     );
 
-    let x = origin.x | 0;
-    let y = origin.y | 0;
-    let z = origin.z | 0;
+    let x = Math.floor(origin.x);
+    let y = Math.floor(origin.y);
+    let z = Math.floor(origin.z);
 
     const stepX = dir.x > 0 ? 1 : dir.x < 0 ? -1 : 0;
     const stepY = dir.y > 0 ? 1 : dir.y < 0 ? -1 : 0;

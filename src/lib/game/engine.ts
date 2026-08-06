@@ -266,6 +266,7 @@ export class Engine {
   timeOfDay = 0.3; // start at morning
   running = false;
   lastTime = 0;
+  private _accum = 0; // physics sub-step accumulator
   fpsAccum = 0;
   fpsCount = 0;
   fps = 60;
@@ -425,10 +426,10 @@ export class Engine {
         this.world.setBlock(x, y, z, Block.AIR);
         this.edits.set(`${x},${y},${z}`, Block.AIR);
         this.world.remeshAround(x, z);
-        if (x & 15 === 0) this.world.remeshAround(x - 1, z);
-        if (x & 15 === 15) this.world.remeshAround(x + 1, z);
-        if (z & 15 === 0) this.world.remeshAround(x, z - 1);
-        if (z & 15 === 15) this.world.remeshAround(x, z + 1);
+        if ((x & 15) === 0) this.world.remeshAround(x - 1, z);
+        if ((x & 15) === 15) this.world.remeshAround(x + 1, z);
+        if ((z & 15) === 0) this.world.remeshAround(x, z - 1);
+        if ((z & 15) === 15) this.world.remeshAround(x, z + 1);
       },
       emitParticles: (x, y, z, block, count) => {
         this.particles.emitBlockBreak(x, y, z, block, count);
@@ -700,6 +701,23 @@ export class Engine {
       // restore player
       const p = data.player;
       if (p) {
+        // Pre-generate chunks at the saved position so the player doesn't
+        // fall through unloaded terrain into the void.
+        const pcx = Math.floor(p.x / CHUNK_SIZE);
+        const pcz = Math.floor(p.z / CHUNK_SIZE);
+        for (let dx = -2; dx <= 2; dx++)
+          for (let dz = -2; dz <= 2; dz++)
+            this.world.ensureTerrain(pcx + dx, pcz + dz);
+        for (let dx = -2; dx <= 2; dx++)
+          for (let dz = -2; dz <= 2; dz++)
+            this.world.ensureDecorated(pcx + dx, pcz + dz);
+        // re-apply edits AFTER terrain generation (generation overwrites them)
+        if (Array.isArray(data.edits)) {
+          for (const [x, y, z, b] of data.edits) {
+            this.world.setBlock(x, y, z, b);
+            this.edits.set(`${x},${y},${z}`, b);
+          }
+        }
         this.player.pos.set(p.x, p.y, p.z);
         this.player.vel.set(0, 0, 0);
         this.player.yaw = p.yaw ?? 0;
@@ -1160,14 +1178,15 @@ export class Engine {
   private loop = (now: number) => {
     if (!this.running) return;
     this._raf = requestAnimationFrame(this.loop);
-    // Cap dt at 33ms (30fps min) to prevent physics explosions on frame spikes.
-    // If the frame took longer, we run multiple sub-steps for stable physics.
-    const rawDt = (now - this.lastTime) / 1000;
+    // Sub-stepping: if the frame took longer than 33ms, run multiple physics
+    // sub-steps so the game doesn't go slow-motion at low FPS.
+    const rawDt = Math.min(0.1, (now - this.lastTime) / 1000); // hard cap 100ms
     this.lastTime = now;
-    const dt = Math.min(0.033, rawDt);
+    this._accum += rawDt;
+    const dt = Math.min(0.033, rawDt); // for non-physics systems (sky, etc.)
 
     // fps
-    this.fpsAccum += dt;
+    this.fpsAccum += rawDt;
     this.fpsCount++;
     if (this.fpsAccum >= 0.5) {
       this.fps = Math.round(this.fpsCount / this.fpsAccum);
@@ -1259,7 +1278,16 @@ export class Engine {
     }
 
     // player physics + survival
-    this.player.update(dt);
+    // player physics — sub-stepped for stability at low FPS
+    const stepDt = 0.02; // 50Hz
+    let steps = 0;
+    while (this._accum >= stepDt && steps < 5) {
+      this.player.update(stepDt);
+      this._accum -= stepDt;
+      steps++;
+    }
+    // if accumulator still has time (e.g. tab was inactive), drop it
+    if (this._accum > 0.2) this._accum = 0;
 
     // world streaming (budget scales modestly with render distance)
     const budget = Math.max(2, Math.floor(this.settings.renderDistance / 2));
@@ -1276,7 +1304,7 @@ export class Engine {
     // FOV kick (sprint) — smooth apply to camera
     const targetFov = this.settings.fov + this.player.fovKick;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
-      this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 10);
+      this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-10 * dt));
       this.camera.updateProjectionMatrix();
     }
 
@@ -1291,6 +1319,11 @@ export class Engine {
     }
   };
 
+  private _lastHotbarRef: number[] | null = null;
+  private _lastHotbarKey = "";
+  private _lastSettingsRef: Settings | null = null;
+  private _lastSettingsKey = "";
+
   private emitHud() {
     if (!this.callbacks.onHud) return;
     const biomeId = this.world.getBiomeAt(
@@ -1299,6 +1332,17 @@ export class Engine {
     );
     const biome = getBiome(biomeId);
     const sel = this.getSelectedBlock();
+    // Only create new array/object refs when contents actually change
+    const hotbarKey = this.hotbar.join(",") + ":" + this.selected;
+    if (hotbarKey !== this._lastHotbarKey) {
+      this._lastHotbarKey = hotbarKey;
+      this._lastHotbarRef = [...this.hotbar];
+    }
+    const settingsKey = JSON.stringify(this.settings);
+    if (settingsKey !== this._lastSettingsKey) {
+      this._lastSettingsKey = settingsKey;
+      this._lastSettingsRef = { ...this.settings };
+    }
     this.callbacks.onHud({
       health: this.player.health,
       maxHealth: this.player.maxHealth,
@@ -1316,7 +1360,7 @@ export class Engine {
       selectedBlock: sel,
       selectedName: BLOCKS[sel]?.name ?? "?",
       selectedSlot: this.selected,
-      hotbar: [...this.hotbar],
+      hotbar: this._lastHotbarRef ?? [...this.hotbar],
       onGround: this.player.onGround,
       inWater: this.player.inWater,
       yaw: this.player.yaw,
@@ -1324,7 +1368,7 @@ export class Engine {
       weather: this.raining ? "rain" : "clear",
       gameMode: this.player.gameMode,
       brightness: this.settings.brightness,
-      settings: { ...this.settings },
+      settings: this._lastSettingsRef ?? { ...this.settings },
       raining: this.raining,
       targetBlock: this.targetBlock,
       breakProgress: this.breakProgress,

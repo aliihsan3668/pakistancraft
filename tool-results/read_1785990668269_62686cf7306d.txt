@@ -1,0 +1,1141 @@
+     1→"use client";
+     2→
+     3→import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+     4→import {
+     5→  Engine,
+     6→  CREATIVE_PALETTE,
+     7→  DEFAULT_SETTINGS,
+     8→  type HudState,
+     9→} from "@/lib/game/engine";
+    10→import { BLOCKS } from "@/lib/game/blocks";
+    11→import { makeBlockIcon } from "@/lib/game/icons";
+    12→import { hashSeed } from "@/lib/game/constants";
+    13→import {
+    14→  loadSettings,
+    15→  saveSettings,
+    16→  type Settings,
+    17→} from "@/lib/game/settings";
+    18→import { Button } from "@/components/ui/button";
+    19→import { Input } from "@/components/ui/input";
+    20→import { Slider } from "@/components/ui/slider";
+    21→import { Switch } from "@/components/ui/switch";
+    22→import { Label } from "@/components/ui/label";
+    23→import { HeartIcon, FoodIcon, SunIcon, MoonIcon } from "./icons";
+    24→import { TouchControls, useIsTouchDevice } from "./TouchControls";
+    25→import { Minimap } from "./Minimap";
+    26→
+    27→type Phase = "start" | "playing";
+    28→
+    29→const SEED_PRESETS = [
+    30→  { label: "Lahore", seed: "lahore" },
+    31→  { label: "Karachi Coast", seed: "karachi" },
+    32→  { label: "Hunza Valley", seed: "hunza" },
+    33→  { label: "Thar Desert", seed: "thar" },
+    34→  { label: "Swat Forests", seed: "swat" },
+    35→];
+    36→
+    37→export default function PakistanCraft() {
+    38→  const canvasRef = useRef<HTMLCanvasElement>(null);
+    39→  const engineRef = useRef<Engine | null>(null);
+    40→  const seedRef = useRef<number>(0);
+    41→  const [phase, setPhase] = useState<Phase>("start");
+    42→  const [hud, setHud] = useState<HudState | null>(null);
+    43→  const [seedInput, setSeedInput] = useState("");
+    44→  const [showInventory, setShowInventory] = useState(false);
+    45→  const [paused, setPaused] = useState(false);
+    46→  const [showSettings, setShowSettings] = useState(false);
+    47→  const [error, setError] = useState<string | null>(null);
+    48→  const [hasSave, setHasSave] = useState(() =>
+    49→    typeof window !== "undefined" ? Engine.hasSave() : false
+    50→  );
+    51→  const [settings, setSettings] = useState<Settings>(() =>
+    52→    typeof window !== "undefined" ? loadSettings() : DEFAULT_SETTINGS
+    53→  );
+    54→  const [toast, setToast] = useState<string | null>(null);
+    55→  const [engineState, setEngineState] = useState<Engine | null>(null);
+    56→  const [forceTouch, setForceTouch] = useState(false);
+    57→  const detectedTouch = useIsTouchDevice();
+    58→  const isTouch = forceTouch || detectedTouch;
+    59→
+    60→  // refresh save flag when returning to start screen
+    61→  useEffect(() => {
+    62→    if (phase === "start") {
+    63→      const flag = Engine.hasSave();
+    64→      queueMicrotask(() => setHasSave(flag));
+    65→    }
+    66→  }, [phase]);
+    67→
+    68→  const showToast = useCallback((msg: string) => {
+    69→    setToast(msg);
+    70→    setTimeout(() => setToast(null), 2200);
+    71→  }, []);
+    72→
+    73→  const startGame = useCallback(
+    74→    (seedStr: string, loadSave: boolean) => {
+    75→      const seedNum = seedStr ? hashSeed(seedStr) : Math.floor(Math.random() * 1e9);
+    76→      seedRef.current = seedNum;
+    77→      setHud(null);
+    78→      setError(null);
+    79→      setPaused(false);
+    80→      setShowSettings(false);
+    81→      setShowInventory(false);
+    82→      setPhase("playing");
+    83→      // stash whether to load save (handled in mount effect)
+    84→      if (loadSave) {
+    85→        sessionStorage.setItem("pc.loadsave", "1");
+    86→      } else {
+    87→        sessionStorage.removeItem("pc.loadsave");
+    88→      }
+    89→    },
+    90→    []
+    91→  );
+    92→
+    93→  // mount engine when entering playing phase
+    94→  useEffect(() => {
+    95→    if (phase !== "playing" || !canvasRef.current) return;
+    96→    const s = loadSettings();
+    97→    queueMicrotask(() => setSettings(s));
+    98→    const wantLoad = sessionStorage.getItem("pc.loadsave") === "1";
+    99→    sessionStorage.removeItem("pc.loadsave");
+   100→    let eng: Engine | null = null;
+   101→    try {
+   102→      eng = new Engine(canvasRef.current, {
+   103→        seed: seedRef.current,
+   104→        settings: s,
+   105→        onHud: (st) => setHud(st),
+   106→        onError: (m) => setError(m),
+   107→      });
+   108→    } catch (e) {
+   109→      const msg =
+   110→        "Failed to start the game engine. " +
+   111→        (e instanceof Error ? e.message : String(e));
+   112→      queueMicrotask(() => setError(msg));
+   113→      return;
+   114→    }
+   115→    engineRef.current = eng;
+   116→    setEngineState(eng);
+   117→    const raf2 = requestAnimationFrame(() => {
+   118→      requestAnimationFrame(() => {
+   119→        try {
+   120→          eng?.start();
+   121→          if (wantLoad && Engine.hasSave()) {
+   122→            const r = eng.loadState();
+   123→            if (r) {
+   124→              seedRef.current = r.seed;
+   125→              showToast("World loaded");
+   126→            }
+   127→          }
+   128→        } catch (e) {
+   129→          const msg =
+   130→            "Failed to generate world. " +
+   131→            (e instanceof Error ? e.message : String(e));
+   132→          queueMicrotask(() => setError(msg));
+   133→        }
+   134→      });
+   135→    });
+   136→    return () => {
+   137→      cancelAnimationFrame(raf2);
+   138→      eng?.dispose();
+   139→      engineRef.current = null;
+   140→      setEngineState(null);
+   141→    };
+   142→  }, [phase, showToast]);
+   143→
+   144→  // keyboard: E inventory, Esc pause/settings
+   145→  useEffect(() => {
+   146→    if (phase !== "playing") return;
+   147→    const handler = (e: KeyboardEvent) => {
+   148→      if (e.code === "KeyE") {
+   149→        e.preventDefault();
+   150→        if (showSettings || paused) return;
+   151→        setShowInventory((v) => {
+   152→          const next = !v;
+   153→          const eng = engineRef.current;
+   154→          if (eng) {
+   155→            eng.inputEnabled = !next;
+   156→            if (next && document.pointerLockElement) document.exitPointerLock();
+   157→          }
+   158→          return next;
+   159→        });
+   160→      } else if (e.code === "Escape") {
+   161→        if (showInventory) {
+   162→          setShowInventory(false);
+   163→          const eng = engineRef.current;
+   164→          if (eng) eng.inputEnabled = true;
+   165→        } else if (showSettings) {
+   166→          setShowSettings(false);
+   167→        } else {
+   168→          setPaused((p) => {
+   169→            const next = !p;
+   170→            const eng = engineRef.current;
+   171→            if (eng) eng.inputEnabled = !next;
+   172→            if (next && document.pointerLockElement) document.exitPointerLock();
+   173→            return next;
+   174→          });
+   175→        }
+   176→      }
+   177→    };
+   178→    window.addEventListener("keydown", handler);
+   179→    return () => window.removeEventListener("keydown", handler);
+   180→  }, [phase, showInventory, paused, showSettings]);
+   181→
+   182→  const closeInventory = useCallback(() => {
+   183→    setShowInventory(false);
+   184→    const eng = engineRef.current;
+   185→    if (eng) {
+   186→      eng.inputEnabled = true;
+   187→      eng.requestPointerLock();
+   188→    }
+   189→  }, []);
+   190→
+   191→  const resume = useCallback(() => {
+   192→    setPaused(false);
+   193→    const eng = engineRef.current;
+   194→    if (eng) {
+   195→      eng.inputEnabled = true;
+   196→      eng.requestPointerLock();
+   197→    }
+   198→  }, []);
+   199→
+   200→  const openSettings = useCallback(() => setShowSettings(true), []);
+   201→  const closeSettings = useCallback(() => setShowSettings(false), []);
+   202→
+   203→  const onSaveGame = useCallback(() => {
+   204→    const eng = engineRef.current;
+   205→    if (!eng) return;
+   206→    const ok = eng.saveState(seedRef.current);
+   207→    if (ok) {
+   208→      setHasSave(true);
+   209→      showToast("Game saved");
+   210→    } else {
+   211→      showToast("Save failed");
+   212→    }
+   213→  }, [showToast]);
+   214→
+   215→  const onQuitToMenu = useCallback(() => {
+   216→    const eng = engineRef.current;
+   217→    eng?.dispose();
+   218→    engineRef.current = null;
+   219→    setPhase("start");
+   220→    setPaused(false);
+   221→    setShowSettings(false);
+   222→    setShowInventory(false);
+   223→    setHud(null);
+   224→    setHasSave(Engine.hasSave());
+   225→  }, []);
+   226→
+   227→  const onDeleteSave = useCallback(() => {
+   228→    Engine.clearSave();
+   229→    setHasSave(false);
+   230→    showToast("Save deleted");
+   231→  }, [showToast]);
+   232→
+   233→  const onCanvasClick = useCallback(() => {
+   234→    if (showInventory || paused || showSettings) return;
+   235→    engineRef.current?.requestPointerLock();
+   236→  }, [showInventory, paused, showSettings]);
+   237→
+   238→  const pickBlock = useCallback(
+   239→    (blockId: number) => {
+   240→      const eng = engineRef.current;
+   241→      if (!eng || !hud) return;
+   242→      eng.setHotbarSlot(eng.selected, blockId);
+   243→    },
+   244→    [hud]
+   245→  );
+   246→
+   247→  const updateSettings = useCallback((partial: Partial<Settings>) => {
+   248→    const eng = engineRef.current;
+   249→    if (eng) {
+   250→      eng.setSettings(partial);
+   251→      setSettings({ ...eng.settings });
+   252→    } else {
+   253→      const next = { ...loadSettings(), ...partial };
+   254→      saveSettings(next);
+   255→      setSettings(next);
+   256→    }
+   257→  }, []);
+   258→
+   259→  if (error) {
+   260→    return <ErrorScreen message={error} onBack={() => setPhase("start")} />;
+   261→  }
+   262→
+   263→  return (
+   264→    <div
+   265→      className="fixed inset-0 overflow-hidden bg-black select-none"
+   266→      style={{ height: "100dvh" }}
+   267→    >
+   268→      {phase === "playing" && (
+   269→        <canvas
+   270→          ref={canvasRef}
+   271→          onClick={onCanvasClick}
+   272→          className="absolute inset-0 block h-full w-full"
+   273→          style={{ touchAction: "none" }}
+   274→        />
+   275→      )}
+   276→
+   277→      {phase === "start" && (
+   278→        <StartScreen
+   279→          onPlay={(s) => startGame(s, false)}
+   280→          onContinue={() => startGame("", true)}
+   281→          hasSave={hasSave}
+   282→          onDeleteSave={onDeleteSave}
+   283→          settings={settings}
+   284→          onUpdateSettings={updateSettings}
+   285→        />
+   286→      )}
+   287→
+   288→      {phase === "playing" && !hud && <LoadingScreen />}
+   289→
+   290→      {phase === "playing" && hud && (
+   291→        <>
+   292→          <Hud hud={hud} isTouch={isTouch} />
+   293→          <Minimap hud={hud} engine={engineState} />
+   294→          {isTouch && !paused && !showSettings && !showInventory && (
+   295→            <TouchControls
+   296→              onMove={(x, y) => engineRef.current?.setTouchInput({ moveX: x, moveY: y })}
+   297→              onLook={(dx, dy) => engineRef.current?.setTouchInput({ lookDX: dx, lookDY: dy })}
+   298→              onJump={(d) => engineRef.current?.setTouchInput({ jump: d })}
+   299→              onSprint={(d) => engineRef.current?.setTouchInput({ sprint: d })}
+   300→              onSneak={(d) => engineRef.current?.setTouchInput({ sneak: d })}
+   301→              onBreakStart={() => engineRef.current?.setTouchInput({ breakBtn: true })}
+   302→              onBreakEnd={() => engineRef.current?.setTouchInput({ breakBtn: false })}
+   303→              onTapBreak={() => engineRef.current?.breakBlock()}
+   304→              onPlace={() => engineRef.current?.placeBlock()}
+   305→              onFly={() => {
+   306→                const eng = engineRef.current;
+   307→                if (!eng) return;
+   308→                if (eng.player.gameMode !== "creative") eng.setGameMode("creative");
+   309→                eng.player.toggleFly();
+   310→              }}
+   311→              onInventory={() => {
+   312→                setShowInventory(true);
+   313→                const eng = engineRef.current;
+   314→                if (eng) {
+   315→                  eng.inputEnabled = false;
+   316→                  if (document.pointerLockElement) document.exitPointerLock();
+   317→                }
+   318→              }}
+   319→              hotbar={hud.hotbar}
+   320→              selectedSlot={hud.selectedSlot}
+   321→              onSelectSlot={(i) => engineRef.current?.setSelected(i)}
+   322→            />
+   323→          )}
+   324→          {paused && !showSettings && (
+   325→            <PauseOverlay
+   326→              onResume={resume}
+   327→              onSettings={openSettings}
+   328→              onSave={onSaveGame}
+   329→              onQuit={onQuitToMenu}
+   330→              hasSave={hasSave}
+   331→              isTouch={isTouch}
+   332→              onToggleTouch={() => setForceTouch((v) => !v)}
+   333→            />
+   334→          )}
+   335→          {showSettings && (
+   336→            <SettingsPanel
+   337→              settings={settings}
+   338→              onUpdate={updateSettings}
+   339→              onClose={closeSettings}
+   340→              inGame
+   341→            />
+   342→          )}
+   343→          {showInventory && (
+   344→            <Inventory
+   345→              selectedSlot={hud.selectedSlot}
+   346→              hotbar={hud.hotbar}
+   347→              onPick={pickBlock}
+   348→              onClose={closeInventory}
+   349→            />
+   350→          )}
+   351→        </>
+   352→      )}
+   353→
+   354→      {toast && (
+   355→        <div className="pointer-events-none absolute bottom-28 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-white/15 bg-black/80 px-4 py-2 font-mono text-sm text-emerald-300 backdrop-blur">
+   356→          {toast}
+   357→        </div>
+   358→      )}
+   359→    </div>
+   360→  );
+   361→}
+   362→
+   363→// ---------- Error Screen ----------
+   364→function ErrorScreen({ message, onBack }: { message: string; onBack: () => void }) {
+   365→  return (
+   366→    <div className="fixed inset-0 flex items-center justify-center bg-[#1a0a0a] p-6">
+   367→      <div className="max-w-md rounded-xl border border-red-500/30 bg-black/50 p-6 text-center">
+   368→        <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-red-500/20 text-2xl">
+   369→          ⚠
+   370→        </div>
+   371→        <h2 className="text-xl font-bold text-red-300">Couldn&apos;t start game</h2>
+   372→        <p className="mt-2 text-sm text-white/70">{message}</p>
+   373→        <Button
+   374→          onClick={onBack}
+   375→          className="mt-5 bg-[#e8c14a] font-bold text-[#01411C] hover:bg-[#f0d060]"
+   376→        >
+   377→          ← Back to menu
+   378→        </Button>
+   379→      </div>
+   380→    </div>
+   381→  );
+   382→}
+   383→
+   384→// ---------- Start Screen ----------
+   385→function StartScreen({
+   386→  onPlay,
+   387→  onContinue,
+   388→  hasSave,
+   389→  onDeleteSave,
+   390→  settings,
+   391→  onUpdateSettings,
+   392→}: {
+   393→  onPlay: (seed: string) => void;
+   394→  onContinue: () => void;
+   395→  hasSave: boolean;
+   396→  onDeleteSave: () => void;
+   397→  settings: Settings;
+   398→  onUpdateSettings: (p: Partial<Settings>) => void;
+   399→}) {
+   400→  const [seed, setSeed] = useState("");
+   401→  const [showSettings, setShowSettings] = useState(false);
+   402→  return (
+   403→    <div className="absolute inset-0 flex flex-col items-center justify-center overflow-y-auto">
+   404→      <div className="absolute inset-0 bg-[#01411C]" />
+   405→      <div className="absolute inset-0 opacity-30 [background-image:linear-gradient(90deg,transparent_24px,rgba(255,255,255,0.04)_24px,rgba(255,255,255,0.04)_25px,transparent_25px),linear-gradient(0deg,transparent_24px,rgba(255,255,255,0.04)_24px,rgba(255,255,255,0.04)_25px,transparent_25px)] [background-size:25px_25px]" />
+   406→      <div className="pointer-events-none absolute right-[8%] top-[12%] h-40 w-40 rounded-full border-[14px] border-white/15" />
+   407→      <div className="pointer-events-none absolute right-[14%] top-[14%] h-28 w-28 rounded-full bg-[#01411C]" />
+   408→      <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-32 [background-image:linear-gradient(135deg,#0a3d20_25%,transparent_25%),linear-gradient(225deg,#0a3d20_25%,transparent_25%),linear-gradient(45deg,#0a3d20_25%,transparent_25%),linear-gradient(315deg,#0a3d20_25%,transparent_25%)] [background-size:48px_48px] opacity-40" />
+   409→
+   410→      <div className="relative z-10 flex flex-col items-center px-4 py-10 text-center">
+   411→        <div className="mb-4 flex items-end gap-1.5">
+   412→          {[
+   413→            ["#4f8a3a", "#3c6e2a", 64],
+   414→            ["#b8895a", "#8a6a3a", 80],
+   415→            ["#9c3b22", "#7a2a18", 56],
+   416→            ["#2f6fd0", "#1f4a8a", 72],
+   417→            ["#e8c14a", "#b8902a", 60],
+   418→          ].map(([c1, c2, h], i) => (
+   419→            <div
+   420→              key={i}
+   421→              className="w-9 rounded-sm shadow-lg"
+   422→              style={{
+   423→                height: `${h}px`,
+   424→                background: `linear-gradient(180deg, ${c1} 0 18%, ${c2} 18% 100%)`,
+   425→                border: `2px solid rgba(0,0,0,0.3)`,
+   426→                animation: `pc-float 2.5s ease-in-out ${i * 0.15}s infinite`,
+   427→              }}
+   428→            />
+   429→          ))}
+   430→        </div>
+   431→        <style>{`@keyframes pc-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-8px)}}`}</style>
+   432→
+   433→        <h1
+   434→          className="text-5xl font-black tracking-tight text-white sm:text-7xl"
+   435→          style={{ textShadow: "4px 4px 0 rgba(0,0,0,0.4)" }}
+   436→        >
+   437→          Pakistan<span className="text-[#e8c14a]">Craft</span>
+   438→        </h1>
+   439→        <p className="mt-2 font-mono text-lg text-white/80 sm:text-2xl" dir="rtl">
+   440→          پاکستان کرافٹ
+   441→        </p>
+   442→        <p className="mt-3 max-w-xl text-sm text-white/70 sm:text-base">
+   443→          An original voxel sandbox set across Pakistan — explore Punjab plains,
+   444→          Sindh deserts, Balochistan mountains, Khyber forests &amp; the Gilgit
+   445→          snow peaks. Now with ambient occlusion, dynamic weather, survival
+   446→          mode, sun/moon/stars, block-break particles, and save/load.
+   447→        </p>
+   448→
+   449→        <div className="mt-8 w-full max-w-md rounded-xl border border-white/15 bg-black/30 p-5 backdrop-blur">
+   450→          <label className="mb-2 block text-left text-xs font-semibold uppercase tracking-wider text-white/60">
+   451→            World Seed
+   452→          </label>
+   453→          <Input
+   454→            value={seed}
+   455→            onChange={(e) => setSeed(e.target.value)}
+   456→            placeholder="enter a seed (or leave blank for random)"
+   457→            className="border-white/20 bg-white/10 text-white placeholder:text-white/40"
+   458→          />
+   459→          <div className="mt-3 flex flex-wrap gap-2">
+   460→            {SEED_PRESETS.map((p) => (
+   461→              <button
+   462→                key={p.seed}
+   463→                onClick={() => setSeed(p.seed)}
+   464→                className="rounded-md border border-white/15 bg-white/5 px-2.5 py-1 text-xs text-white/80 transition hover:bg-white/15"
+   465→              >
+   466→                {p.label}
+   467→              </button>
+   468→            ))}
+   469→          </div>
+   470→
+   471→          <Button
+   472→            onClick={() => onPlay(seed)}
+   473→            className="mt-5 w-full bg-[#e8c14a] text-lg font-bold text-[#01411C] hover:bg-[#f0d060]"
+   474→            size="lg"
+   475→          >
+   476→            ▶ New World
+   477→          </Button>
+   478→          {hasSave && (
+   479→            <div className="mt-2 flex gap-2">
+   480→              <Button
+   481→                onClick={onContinue}
+   482→                variant="outline"
+   483→                className="flex-1 border-white/20 bg-white/5 text-white hover:bg-white/15"
+   484→              >
+   485→                ↺ Continue Save
+   486→              </Button>
+   487→              <Button
+   488→                onClick={onDeleteSave}
+   489→                variant="ghost"
+   490→                className="text-red-300/80 hover:bg-red-500/10 hover:text-red-300"
+   491→              >
+   492→                Delete
+   493→              </Button>
+   494→            </div>
+   495→          )}
+   496→          <button
+   497→            onClick={() => setShowSettings(true)}
+   498→            className="mt-3 w-full text-xs text-white/50 underline-offset-2 hover:text-white/80 hover:underline"
+   499→          >
+   500→            ⚙ Settings
+   501→          </button>
+   502→        </div>
+   503→
+   504→        <div className="mt-6 grid max-w-2xl grid-cols-2 gap-x-8 gap-y-1 text-left text-xs text-white/60 sm:grid-cols-3">
+   505→          <Control k="WASD" v="Move" />
+   506→          <Control k="Drag / Mouse" v="Look around" />
+   507→          <Control k="Arrows" v="Look (alt)" />
+   508→          <Control k="Space" v="Jump / Swim" />
+   509→          <Control k="Shift" v="Sprint" />
+   510→          <Control k="Ctrl" v="Sneak / Descend" />
+   511→          <Control k="F" v="Toggle fly" />
+   512→          <Control k="G" v="Creative / Survival" />
+   513→          <Control k="R" v="Toggle rain" />
+   514→          <Control k="T / N" v="Noon / Night" />
+   515→          <Control k="H" v="Teleport to Lahore" />
+   516→          <Control k="Click" v="Break block" />
+   517→          <Control k="R-Click" v="Place block" />
+   518→          <Control k="1–9 / Wheel" v="Select hotbar" />
+   519→          <Control k="E" v="Inventory" />
+   520→          <Control k="Esc" v="Pause menu" />
+   521→        </div>
+   522→
+   523→        <p className="mt-4 max-w-lg rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-[11px] leading-relaxed text-amber-200/80">
+   524→          Tip: in the preview iframe, drag to look, click to break, right-click
+   525→          to place. Arrow keys also turn the camera. Press G for survival mode.
+   526→        </p>
+   527→
+   528→        <p className="mt-6 max-w-lg text-[11px] leading-relaxed text-white/40">
+   529→          Browser voxel sandbox · Three.js · 13 biomes · day/night · weather ·
+   530→          AO lighting · particles · save/load · single &amp; creative modes.
+   531→        </p>
+   532→      </div>
+   533→
+   534→      {showSettings && (
+   535→        <SettingsPanel
+   536→          settings={settings}
+   537→          onUpdate={onUpdateSettings}
+   538→          onClose={() => setShowSettings(false)}
+   539→          inGame={false}
+   540→        />
+   541→      )}
+   542→    </div>
+   543→  );
+   544→}
+   545→
+   546→function Control({ k, v }: { k: string; v: string }) {
+   547→  return (
+   548→    <div className="flex items-center gap-2">
+   549→      <span className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5 font-mono text-[10px] text-white">
+   550→        {k}
+   551→      </span>
+   552→      <span>{v}</span>
+   553→    </div>
+   554→  );
+   555→}
+   556→
+   557→function LoadingScreen() {
+   558→  return (
+   559→    <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#01411C] text-white">
+   560→      <div className="mb-5 h-12 w-12 animate-spin rounded-full border-4 border-white/20 border-t-[#e8c14a]" />
+   561→      <p className="font-mono text-base text-white/80">Generating Pakistan…</p>
+   562→      <p className="mt-2 font-mono text-[11px] text-white/40">
+   563→        carving biomes, rivers, villages &amp; mosques
+   564→      </p>
+   565→      <p className="mt-6 max-w-xs text-center text-[11px] leading-relaxed text-white/30">
+   566→        First load builds the world seed — this only happens once per world.
+   567→      </p>
+   568→    </div>
+   569→  );
+   570→}
+   571→
+   572→// ---------- Pause Overlay ----------
+   573→function PauseOverlay({
+   574→  onResume,
+   575→  onSettings,
+   576→  onSave,
+   577→  onQuit,
+   578→  hasSave,
+   579→  isTouch,
+   580→  onToggleTouch,
+   581→}: {
+   582→  onResume: () => void;
+   583→  onSettings: () => void;
+   584→  onSave: () => void;
+   585→  onQuit: () => void;
+   586→  hasSave: boolean;
+   587→  isTouch: boolean;
+   588→  onToggleTouch: () => void;
+   589→}) {
+   590→  return (
+   591→    <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/60 backdrop-blur-sm">
+   592→      <div className="w-[min(420px,92vw)] rounded-2xl border border-white/15 bg-[#01411C]/90 p-7 text-center">
+   593→        <h2 className="text-3xl font-black text-white">Paused</h2>
+   594→        <p className="mt-1 text-sm text-white/60">Take a breath, traveller.</p>
+   595→        <div className="mt-5 flex flex-col gap-2">
+   596→          <Button
+   597→            onClick={onResume}
+   598→            className="bg-[#e8c14a] font-bold text-[#01411C] hover:bg-[#f0d060]"
+   599→          >
+   600→            ▶ Resume
+   601→          </Button>
+   602→          <div className="grid grid-cols-2 gap-2">
+   603→            <Button
+   604→              onClick={onSettings}
+   605→              variant="outline"
+   606→              className="border-white/20 bg-white/5 text-white hover:bg-white/15"
+   607→            >
+   608→              ⚙ Settings
+   609→            </Button>
+   610→            <Button
+   611→              onClick={onSave}
+   612→              variant="outline"
+   613→              className="border-white/20 bg-white/5 text-white hover:bg-white/15"
+   614→            >
+   615→              💾 Save
+   616→            </Button>
+   617→          </div>
+   618→          <Button
+   619→            onClick={onToggleTouch}
+   620→            variant="outline"
+   621→            className={`border-white/20 text-white hover:bg-white/15 ${
+   622→              isTouch ? "bg-emerald-600/30" : "bg-white/5"
+   623→            }`}
+   624→          >
+   625→            📱 Touch Mode: {isTouch ? "ON" : "OFF"}
+   626→          </Button>
+   627→          <Button
+   628→            onClick={onQuit}
+   629→            variant="ghost"
+   630→            className="text-white/70 hover:bg-white/10 hover:text-white"
+   631→          >
+   632→            Quit to Menu {hasSave ? "(save kept)" : ""}
+   633→          </Button>
+   634→        </div>
+   635→        <div className="mt-5 grid grid-cols-2 gap-x-4 gap-y-1 text-left text-[10px] text-white/50">
+   636→          <Control k="WASD" v="Move" />
+   637→          <Control k="Drag" v="Look" />
+   638→          <Control k="Space" v="Jump" />
+   639→          <Control k="Shift" v="Sprint" />
+   640→          <Control k="Ctrl" v="Sneak" />
+   641→          <Control k="F" v="Fly" />
+   642→          <Control k="G" v="Mode" />
+   643→          <Control k="R" v="Rain" />
+   644→          <Control k="T/N" v="Time" />
+   645→          <Control k="H" v="Lahore" />
+   646→          <Control k="Click" v="Break" />
+   647→          <Control k="R-Click" v="Place" />
+   648→          <Control k="E" v="Inventory" />
+   649→          <Control k="1–9" v="Hotbar" />
+   650→        </div>
+   651→      </div>
+   652→    </div>
+   653→  );
+   654→}
+   655→
+   656→// ---------- Settings Panel ----------
+   657→function SettingsPanel({
+   658→  settings,
+   659→  onUpdate,
+   660→  onClose,
+   661→  inGame,
+   662→}: {
+   663→  settings: Settings;
+   664→  onUpdate: (p: Partial<Settings>) => void;
+   665→  onClose: () => void;
+   666→  inGame: boolean;
+   667→}) {
+   668→  return (
+   669→    <div className="absolute inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+   670→      <div className="max-h-[88vh] w-[min(520px,94vw)] overflow-hidden rounded-2xl border border-white/15 bg-[#0a2a18] shadow-2xl">
+   671→        <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
+   672→          <h2 className="text-lg font-bold text-white">⚙ Settings</h2>
+   673→          <Button
+   674→            variant="ghost"
+   675→            size="sm"
+   676→            onClick={onClose}
+   677→            className="text-white/80 hover:bg-white/10 hover:text-white"
+   678→          >
+   679→            Close ✕
+   680→          </Button>
+   681→        </div>
+   682→        <div className="max-h-[72vh] overflow-y-auto p-5">
+   683→          {/* Graphics */}
+   684→          <Section title="Graphics">
+   685→            <SliderRow
+   686→              label="Render Distance"
+   687→              value={settings.renderDistance}
+   688→              min={2}
+   689→              max={8}
+   690→              step={1}
+   691→              suffix=" chunks"
+   692→              onChange={(v) => onUpdate({ renderDistance: v })}
+   693→            />
+   694→            <SliderRow
+   695→              label="Field of View"
+   696→              value={settings.fov}
+   697→              min={60}
+   698→              max={100}
+   699→              step={1}
+   700→              suffix="°"
+   701→              onChange={(v) => onUpdate({ fov: v })}
+   702→            />
+   703→            <SliderRow
+   704→              label="Brightness"
+   705→              value={Math.round(settings.brightness * 100)}
+   706→              min={60}
+   707→              max={140}
+   708→              step={5}
+   709→              suffix="%"
+   710→              onChange={(v) => onUpdate({ brightness: v / 100 })}
+   711→            />
+   712→            <SliderRow
+   713→              label="Mouse Sensitivity"
+   714→              value={Math.round(settings.mouseSensitivity * 100)}
+   715→              min={20}
+   716→              max={200}
+   717→              step={5}
+   718→              suffix="%"
+   719→              onChange={(v) => onUpdate({ mouseSensitivity: v / 100 })}
+   720→            />
+   721→          </Section>
+   722→
+   723→          <Section title="Toggles">
+   724→            <ToggleRow
+   725→              label="Ambient Occlusion"
+   726→              checked={settings.ao}
+   727→              onChange={(v) => onUpdate({ ao: v })}
+   728→            />
+   729→            <ToggleRow
+   730→              label="Clouds"
+   731→              checked={settings.renderClouds}
+   732→              onChange={(v) => onUpdate({ renderClouds: v })}
+   733→            />
+   734→            <ToggleRow
+   735→              label="Stars at night"
+   736→              checked={settings.renderStars}
+   737→              onChange={(v) => onUpdate({ renderStars: v })}
+   738→            />
+   739→            <ToggleRow
+   740→              label="Dynamic weather"
+   741→              checked={settings.weather}
+   742→              onChange={(v) => onUpdate({ weather: v })}
+   743→            />
+   744→            <ToggleRow
+   745→              label="Show FPS"
+   746→              checked={settings.showFps}
+   747→              onChange={(v) => onUpdate({ showFps: v })}
+   748→            />
+   749→            <ToggleRow
+   750→              label="Show coordinates"
+   751→              checked={settings.showCoords}
+   752→              onChange={(v) => onUpdate({ showCoords: v })}
+   753→            />
+   754→          </Section>
+   755→
+   756→          <Section title="Game Mode">
+   757→            <div className="grid grid-cols-2 gap-2">
+   758→              <ModeButton
+   759→                active={settings.gameMode === "creative"}
+   760→                onClick={() => onUpdate({ gameMode: "creative" })}
+   761→                title="Creative"
+   762→                desc="Fly, infinite blocks"
+   763→              />
+   764→              <ModeButton
+   765→                active={settings.gameMode === "survival"}
+   766→                onClick={() => onUpdate({ gameMode: "survival" })}
+   767→                title="Survival"
+   768→                desc="Hunger, fall damage"
+   769→              />
+   770→            </div>
+   771→            {inGame && (
+   772→              <p className="mt-2 text-[11px] text-white/50">
+   773→                Press <span className="font-mono text-white/70">G</span> in-game
+   774→                to toggle mode instantly.
+   775→              </p>
+   776→            )}
+   777→          </Section>
+   778→        </div>
+   779→      </div>
+   780→    </div>
+   781→  );
+   782→}
+   783→
+   784→function Section({ title, children }: { title: string; children: React.ReactNode }) {
+   785→  return (
+   786→    <div className="mb-5">
+   787→      <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-amber-300/80">
+   788→        {title}
+   789→      </h3>
+   790→      <div className="space-y-3">{children}</div>
+   791→    </div>
+   792→  );
+   793→}
+   794→
+   795→function SliderRow({
+   796→  label,
+   797→  value,
+   798→  min,
+   799→  max,
+   800→  step,
+   801→  suffix,
+   802→  onChange,
+   803→}: {
+   804→  label: string;
+   805→  value: number;
+   806→  min: number;
+   807→  max: number;
+   808→  step: number;
+   809→  suffix: string;
+   810→  onChange: (v: number) => void;
+   811→}) {
+   812→  return (
+   813→    <div>
+   814→      <div className="mb-1 flex items-center justify-between">
+   815→        <Label className="text-sm text-white/80">{label}</Label>
+   816→        <span className="font-mono text-xs text-amber-200">
+   817→          {value}
+   818→          {suffix}
+   819→        </span>
+   820→      </div>
+   821→      <Slider
+   822→        value={[value]}
+   823→        min={min}
+   824→        max={max}
+   825→        step={step}
+   826→        onValueChange={(v) => onChange(v[0])}
+   827→      />
+   828→    </div>
+   829→  );
+   830→}
+   831→
+   832→function ToggleRow({
+   833→  label,
+   834→  checked,
+   835→  onChange,
+   836→}: {
+   837→  label: string;
+   838→  checked: boolean;
+   839→  onChange: (v: boolean) => void;
+   840→}) {
+   841→  return (
+   842→    <div className="flex items-center justify-between">
+   843→      <Label className="text-sm text-white/80">{label}</Label>
+   844→      <Switch checked={checked} onCheckedChange={onChange} />
+   845→    </div>
+   846→  );
+   847→}
+   848→
+   849→function ModeButton({
+   850→  active,
+   851→  onClick,
+   852→  title,
+   853→  desc,
+   854→}: {
+   855→  active: boolean;
+   856→  onClick: () => void;
+   857→  title: string;
+   858→  desc: string;
+   859→}) {
+   860→  return (
+   861→    <button
+   862→      onClick={onClick}
+   863→      className={`rounded-lg border p-3 text-left transition ${
+   864→        active
+   865→          ? "border-amber-400 bg-amber-400/15"
+   866→          : "border-white/15 bg-black/30 hover:bg-white/10"
+   867→      }`}
+   868→    >
+   869→      <div className="text-sm font-bold text-white">{title}</div>
+   870→      <div className="text-[11px] text-white/60">{desc}</div>
+   871→    </button>
+   872→  );
+   873→}
+   874→
+   875→// ---------- HUD ----------
+   876→function Hud({ hud, isTouch }: { hud: HudState; isTouch: boolean }) {
+   877→  const hours = Math.floor(hud.timeOfDay * 24);
+   878→  const minutes = Math.floor((hud.timeOfDay * 24 * 60) % 60);
+   879→  const timeStr = `${hours.toString().padStart(2, "0")}:${minutes
+   880→    .toString()
+   881→    .padStart(2, "0")}`;
+   882→  const isDay = hud.timeOfDay > 0.25 && hud.timeOfDay < 0.75;
+   883→  const hearts = Math.ceil(hud.health / 2);
+   884→  const foods = Math.ceil(hud.hunger / 2);
+   885→  const showStats = hud.gameMode === "survival";
+   886→
+   887→  return (
+   888→    <div className="pointer-events-none absolute inset-0 z-10">
+   889→      {/* Underwater overlay */}
+   890→      {hud.inWater && (
+   891→        <div
+   892→          className="absolute inset-0"
+   893→          style={{
+   894→            background:
+   895→              "linear-gradient(180deg, rgba(40,90,160,0.35) 0%, rgba(20,50,100,0.45) 100%)",
+   896→          }}
+   897→        />
+   898→      )}
+   899→      {/* Explosion flash overlay */}
+   900→      {hud.flashTimer > 0 && (
+   901→        <div
+   902→          className="absolute inset-0 bg-orange-200"
+   903→          style={{ opacity: hud.flashTimer * 2 }}
+   904→        />
+   905→      )}
+   906→      {/* Crosshair — dot + ring, scales subtly with break progress */}
+   907→      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+   908→        <div className="relative h-6 w-6">
+   909→          <div
+   910→            className="absolute left-1/2 top-1/2 h-1 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white mix-blend-difference"
+   911→          />
+   912→          <div
+   913→            className="absolute left-1/2 top-1/2 h-5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/60 mix-blend-difference"
+   914→            style={{
+   915→              transform: `translate(-50%, -50%) scale(${1 + hud.breakProgress * 0.8})`,
+   916→              borderColor: hud.breakProgress > 0 ? `rgba(255,${Math.round(255 - hud.breakProgress * 200)},0,0.9)` : undefined,
+   917→            }}
+   918→          />
+   919→        </div>
+   920→      </div>
+   921→
+   922→      {/* Selected block name tooltip (above hotbar) */}
+   923→      <div className="absolute bottom-[88px] left-1/2 -translate-x-1/2 rounded-md border border-white/15 bg-black/60 px-3 py-1 font-mono text-[11px] text-amber-200 backdrop-blur">
+   924→        {hud.selectedName}
+   925→      </div>
+   926→
+   927→      {/* Top-left info panel — responsive sizing */}
+   928→      <div className="absolute left-2 top-2 rounded-lg border border-white/10 bg-black/55 px-2.5 py-1.5 font-mono text-[10px] leading-relaxed text-white backdrop-blur sm:left-3 sm:top-3 sm:px-3 sm:py-2 sm:text-[11px]">
+   929→        <div className="flex items-center gap-2">
+   930→          <span className="inline-block h-2 w-2 rounded-full bg-emerald-400" />
+   931→          <span className="font-bold text-emerald-300">{hud.biome}</span>
+   932→          <span className="text-white/50" dir="rtl">
+   933→            {hud.biomeUrdu}
+   934→          </span>
+   935→        </div>
+   936→        {hud.settings.showCoords && (
+   937→          <div className="mt-1 text-white/80">
+   938→            X {hud.x.toFixed(1)}  Y {hud.y.toFixed(1)}  Z {hud.z.toFixed(1)}
+   939→          </div>
+   940→        )}
+   941→        <div className="mt-0.5 flex items-center gap-2 text-white/70">
+   942→          {isDay ? <SunIcon /> : <MoonIcon />}
+   943→          <span>{timeStr}</span>
+   944→          <span className="text-white/40">·</span>
+   945→          <span className="text-cyan-300 font-bold">{hud.heading}</span>
+   946→          {hud.settings.showFps && (
+   947→            <>
+   948→              <span className="text-white/40">·</span>
+   949→              <span className={hud.fps >= 50 ? "text-emerald-300" : hud.fps >= 30 ? "text-amber-300" : "text-red-300"}>{hud.fps} fps</span>
+   950→            </>
+   951→          )}
+   952→          {hud.flying && (
+   953→            <>
+   954→              <span className="text-white/40">·</span>
+   955→              <span className="text-amber-300">FLY</span>
+   956→            </>
+   957→          )}
+   958→          {hud.raining && (
+   959→            <>
+   960→              <span className="text-white/40">·</span>
+   961→              <span className="text-sky-300">RAIN</span>
+   962→            </>
+   963→          )}
+   964→        </div>
+   965→        <div className="mt-0.5">
+   966→          <span
+   967→            className={
+   968→              hud.gameMode === "creative" ? "text-emerald-300 font-bold" : "text-orange-300 font-bold"
+   969→            }
+   970→          >
+   971→            {hud.gameMode === "creative" ? "CREATIVE" : "SURVIVAL"}
+   972→          </span>
+   973→        </div>
+   974→      </div>
+   975→
+   976→      {/* Top-right hint — hidden on touch devices */}
+   977→      {!isTouch && (
+   978→        <div className="absolute right-3 top-3 rounded-lg border border-white/10 bg-black/45 px-3 py-1.5 font-mono text-[11px] text-white/70 backdrop-blur">
+   979→          <span className="rounded border border-white/20 bg-white/10 px-1.5 py-0.5">E</span>{" "}
+   980→          Inventory{"  "}
+   981→          <span className="ml-2 rounded border border-white/20 bg-white/10 px-1.5 py-0.5">Esc</span>{" "}
+   982→          Pause
+   983→        </div>
+   984→      )}
+   985→
+   986→      {/* Drag-mode hint — hidden on touch devices */}
+   987→      {!hud.pointerLocked && !isTouch && (
+   988→        <div className="absolute left-1/2 top-14 -translate-x-1/2 rounded-full border border-amber-400/30 bg-black/60 px-4 py-1.5 text-center font-mono text-[11px] text-amber-200/90 backdrop-blur">
+   989→          drag to look · click to break · right-click to place · arrows to look
+   990→        </div>
+   991→      )}
+   992→
+   993→      {/* Bottom: health, hunger, hotbar */}
+   994→      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5">
+   995→        {showStats && (
+   996→          <div className="flex gap-4">
+   997→            <div className="flex gap-0.5">
+   998→              {Array.from({ length: 10 }).map((_, i) => (
+   999→                <HeartIcon key={i} filled={i < hearts} />
+  1000→              ))}
+  1001→            </div>
+  1002→            <div className="flex gap-0.5">
+  1003→              {Array.from({ length: 10 }).map((_, i) => (
+  1004→                <FoodIcon key={i} filled={i < foods} />
+  1005→              ))}
+  1006→            </div>
+  1007→          </div>
+  1008→        )}
+  1009→        {!isTouch && <Hotbar hud={hud} />}
+  1010→      </div>
+  1011→    </div>
+  1012→  );
+  1013→}
+  1014→
+  1015→function Hotbar({ hud }: { hud: HudState }) {
+  1016→  return (
+  1017→    <div className="flex gap-0.5 rounded-lg border-2 border-black/40 bg-black/40 p-1 backdrop-blur sm:gap-1">
+  1018→      {hud.hotbar.map((blockId, i) => {
+  1019→        const isSel = i === hud.selectedSlot;
+  1020→        return (
+  1021→          <div
+  1022→            key={i}
+  1023→            className={`relative h-11 w-11 rounded-md border-2 sm:h-12 sm:w-12 ${
+  1024→              isSel ? "border-white bg-white/15" : "border-white/15 bg-black/40"
+  1025→            }`}
+  1026→          >
+  1027→            <BlockIcon blockId={blockId} size={42} />
+  1028→            <span className="absolute bottom-0 right-0.5 font-mono text-[9px] text-white/70">
+  1029→              {i + 1}
+  1030→            </span>
+  1031→          </div>
+  1032→        );
+  1033→      })}
+  1034→    </div>
+  1035→  );
+  1036→}
+  1037→
+  1038→function BlockIcon({ blockId, size }: { blockId: number; size: number }) {
+  1039→  const src = useMemo(() => {
+  1040→    try {
+  1041→      return makeBlockIcon(blockId, size + 8);
+  1042→    } catch {
+  1043→      return "";
+  1044→    }
+  1045→  }, [blockId, size]);
+  1046→  if (!src) {
+  1047→    return (
+  1048→      <div
+  1049→        className="m-0.5 rounded"
+  1050→        style={{
+  1051→          width: size - 4,
+  1052→          height: size - 4,
+  1053→          background: BLOCKS[blockId]?.color ?? "#888",
+  1054→        }}
+  1055→      />
+  1056→    );
+  1057→  }
+  1058→  return (
+  1059→    <img
+  1060→      src={src}
+  1061→      alt={BLOCKS[blockId]?.name ?? ""}
+  1062→      className="pointer-events-none absolute inset-0 m-auto"
+  1063→      style={{ width: size, height: size, imageRendering: "pixelated" }}
+  1064→      draggable={false}
+  1065→    />
+  1066→  );
+  1067→}
+  1068→
+  1069→// ---------- Inventory ----------
+  1070→function Inventory({
+  1071→  selectedSlot,
+  1072→  hotbar,
+  1073→  onPick,
+  1074→  onClose,
+  1075→}: {
+  1076→  selectedSlot: number;
+  1077→  hotbar: number[];
+  1078→  onPick: (b: number) => void;
+  1079→  onClose: () => void;
+  1080→}) {
+  1081→  return (
+  1082→    <div className="absolute inset-0 z-30 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+  1083→      <div className="max-h-[88vh] w-[min(680px,92vw)] overflow-hidden rounded-2xl border border-white/15 bg-[#0a2a18] shadow-2xl">
+  1084→        <div className="flex items-center justify-between border-b border-white/10 px-5 py-3">
+  1085→          <div>
+  1086→            <h2 className="text-lg font-bold text-white">Block Palette</h2>
+  1087→            <p className="text-xs text-white/60">
+  1088→              Click a block to put it in hotbar slot{" "}
+  1089→              <span className="font-mono text-amber-300">{selectedSlot + 1}</span>
+  1090→            </p>
+  1091→          </div>
+  1092→          <Button
+  1093→            variant="ghost"
+  1094→            size="sm"
+  1095→            onClick={onClose}
+  1096→            className="text-white/80 hover:bg-white/10 hover:text-white"
+  1097→          >
+  1098→            Close ✕
+  1099→          </Button>
+  1100→        </div>
+  1101→
+  1102→        <div className="flex justify-center gap-1 border-b border-white/10 px-5 py-3">
+  1103→          {hotbar.map((b, i) => (
+  1104→            <div
+  1105→              key={i}
+  1106→              className={`relative h-11 w-11 rounded-md border-2 ${
+  1107→                i === selectedSlot
+  1108→                  ? "border-amber-400 bg-white/15"
+  1109→                  : "border-white/15 bg-black/40"
+  1110→              }`}
+  1111→            >
+  1112→              <BlockIcon blockId={b} size={40} />
+  1113→              <span className="absolute bottom-0 right-0.5 font-mono text-[9px] text-white/70">
+  1114→                {i + 1}
+  1115→              </span>
+  1116→            </div>
+  1117→          ))}
+  1118→        </div>
+  1119→
+  1120→        <div className="max-h-[52vh] overflow-y-auto p-4">
+  1121→          <div className="grid grid-cols-5 gap-2 sm:grid-cols-8">
+  1122→            {CREATIVE_PALETTE.map((b) => (
+  1123→              <button
+  1124→                key={b}
+  1125→                onClick={() => onPick(b)}
+  1126→                title={BLOCKS[b]?.name}
+  1127→                className="group relative flex aspect-square items-center justify-center rounded-lg border border-white/10 bg-black/40 transition active:scale-95 hover:border-amber-400 hover:bg-white/10"
+  1128→              >
+  1129→                <BlockIcon blockId={b} size={42} />
+  1130→                <span className="pointer-events-none absolute -bottom-1 left-1/2 -translate-x-1/2 translate-y-full whitespace-nowrap rounded bg-black/90 px-1.5 py-0.5 font-mono text-[10px] text-white opacity-0 transition group-hover:opacity-100">
+  1131→                  {BLOCKS[b]?.name}
+  1132→                </span>
+  1133→              </button>
+  1134→            ))}
+  1135→          </div>
+  1136→        </div>
+  1137→      </div>
+  1138→    </div>
+  1139→  );
+  1140→}
+  1141→
